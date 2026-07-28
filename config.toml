@@ -29,3 +29,13 @@ pipeline_labels = [
 
 # Never suggest merging PRs with these labels.
 never_merge_labels = ["miner-eval"]
+
+# Forks you actively maintain — treat hygiene gaps as fix-direct, not park.
+active_forks = [
+  "cert-manager-webhook-duckdns",
+  "helm-whatup",
+  "docker-duckdns",
+  "jobs-filterer-for-linkedin",
+  "NorseWorld-Ragnarok",
+  "easy-aws-login",
+]

@@ -2,10 +2,11 @@
 name: housekeeping
 description: >-
   Multi-repo GitHub cleanup for lucas-albers-lz4: scan Dependabot, code/secret
-  scanning, open PRs/issues, and ~/gitroot dirty trees; classify fix-direct vs
-  batch-PR vs issue/PR vs pipeline; produce a triage board. Use when this
-  housekeeping workspace is open and the user asks to scan repos, clean up
-  alerts/PRs/issues, or run a cross-repo hygiene pass.
+  scanning, repo hygiene/automation config, open PRs/issues, and ~/gitroot dirty
+  trees; classify fix-direct vs batch-PR vs issue/PR vs pipeline; produce a triage
+  board. Use when this housekeeping workspace is open and the user asks to scan
+  repos, clean up alerts/PRs/issues, audit Dependabot/security settings, or run a
+  cross-repo hygiene pass.
 ---
 
 # Housekeeping (repo cleanup)
@@ -33,7 +34,8 @@ python3 scripts/triage_queue.py
 
 # Narrow / faster
 python3 scripts/scan.py --repos irr,rke2setup,fwlive
-python3 scripts/scan.py --skip-alerts   # PRs/issues/local only
+python3 scripts/scan.py --skip-alerts   # PRs/issues/local (+ hygiene) only
+python3 scripts/scan.py --skip-hygiene  # skip config/automation audit
 python3 scripts/scan.py --skip-local
 ```
 
@@ -49,6 +51,11 @@ Requires authenticated `gh` with access to the owner’s repos (including privat
 | `pipeline` | Agent workflow queue (labels) | Leave alone unless user asks |
 | `never-merge` | e.g. `miner-eval` | Do not merge |
 | `park` | Fork noise / low-value / deferred | Skip |
+
+**Repo hygiene** findings (`repo_hygiene` in the report) are missing automation
+config (Dependabot.yml, push protection, CodeQL default setup, etc.) — not the
+same as open alert debt. Prefer fix-direct PRs using `templates/`. Forks default
+to `park` unless you actively maintain them.
 
 Heuristics in scripts are starting points — adjust with judgment.
 
@@ -85,7 +92,8 @@ Details: [reference.md](reference.md).
 
 ## Files
 
-- `scripts/scan.py` — owner-wide scan
+- `scripts/scan.py` — owner-wide scan (alerts + hygiene + PRs/issues + local)
 - `scripts/triage_queue.py` — queue printer
+- `templates/` — security-only Dependabot + dependency-review snippets
 - `config.toml` — owner, gitroot, pipeline allowlists
 - `out/scan-latest.json` — latest report (gitignored)

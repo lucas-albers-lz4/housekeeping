@@ -20,6 +20,44 @@ Configured in `config.toml`. Non-exhaustive meanings:
 
 When scanning account-wide, list these under **pipeline**, not open debt.
 
+## Repo hygiene baselines (Tier 1)
+
+Hygiene findings come from `scan_repo_hygiene` in `scripts/scan.py`. They flag
+**missing automation**, not open CVEs. Fix with settings toggles and/or a PR
+that adds files from `templates/`.
+
+| Expectation | Good state |
+|-------------|------------|
+| Vulnerability alerts | Enabled |
+| Dependabot security updates | Enabled |
+| `.github/dependabot.yml` | Present; ecosystems cover detected manifests + `github-actions` when workflows exist |
+| Secret scanning | Enabled on **public** repos (private needs GitHub Advanced Security) |
+| Push protection | Enabled on **public** repos (same GHAS limit for private) |
+| Code scanning | Default setup `configured` **or** CodeQL/osv workflow |
+| CI | At least one workflow when the repo has code |
+
+Private repos without GHAS: the scanner records `secret_scanning` /
+`push_protection` as `unavailable_private` and does **not** emit
+`secret_scanning_off` / `push_protection_off`. Dependabot security updates are
+only flagged when explicitly `disabled` (or alerts are off and status is missing).
+
+**Default Dependabot style:** security-only (see
+`templates/dependabot.security-only.yml`): weekly schedule,
+`open-pull-requests-limit: 0`, ignore all version-update types — relies on
+Dependabot **security updates** for PRs. Do not dual-run Renovate + Dependabot
+version updates.
+
+**Tier 2 (low severity in scan):** auto-delete head branches; dependency-review
+workflow when lockfiles exist (`templates/dependency-review.yml`).
+
+Forks and archived repos score `park` — **except** forks listed in
+`config.toml` `active_forks`, which triage as **Active fork — fix** (same
+Dependabot/settings bar as owned repos).
+
+Current `active_forks`: cert-manager-webhook-duckdns, helm-whatup,
+docker-duckdns, jobs-filterer-for-linkedin, NorseWorld-Ragnarok,
+easy-aws-login.
+
 ## Size playbook
 
 ### fix-direct
@@ -28,6 +66,8 @@ When scanning account-wide, list these under **pipeline**, not open debt.
 - Single high/medium Dependabot on an active repo you already have checked out
 - Tiny UX/copy issues with clear acceptance criteria
 - Merge a green single-package Dependabot PR after glancing at the diff
+- Hygiene: add `dependabot.yml` from templates, enable push protection / security
+  updates, turn on CodeQL default setup
 
 Still use a branch + PR if the change is more than a few lines or CI is flaky.
 
@@ -67,8 +107,13 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
 When producing a visual board, use a Cursor canvas in this workspace:
 
 - Embed data from `out/scan-latest.json` (inline constants).
-- Separate sections: quick wins, Dependabot piles, PRs, issues, pipeline, dirty locals.
+- Separate sections: hygiene by **verdict** (exclusions first), quick wins,
+  Dependabot piles, PRs, issues, pipeline, dirty locals.
+- Hygiene finding counts must be sorted/grouped via
+  `scripts/hygiene_verdicts.py` (park archived → park fork → fork consider →
+  tier2 skip → pipeline skip → ship only) so exclusions are obvious.
 - Link to GitHub URLs; do not dump huge alert tables (summarize by repo + severity).
+- Hygiene ≠ alert debt — keep a dedicated “Hygiene gaps” / verdict table.
 
 ## Extending config
 

@@ -4,11 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from hygiene_verdicts import (  # noqa: E402
+    VERDICT_META,
+    finding_id_counts_by_verdict,
+    group_hygiene_findings,
+    verdict_counts,
+)
 
 
 def main() -> int:
@@ -27,15 +36,59 @@ def main() -> int:
     print(f"Scan: {report.get('scanned_at')}  owner={report.get('owner')}")
     print()
 
+    hygiene = report.get("repo_hygiene") or []
+    if hygiene:
+        needs = sum(1 for h in hygiene if h.get("score") == "needs-work")
+        ok = sum(1 for h in hygiene if h.get("score") == "ok")
+        parked = sum(1 for h in hygiene if h.get("score") == "park")
+        grouped = group_hygiene_findings(hygiene)
+        by_verdict = verdict_counts(grouped)
+        id_by_v = finding_id_counts_by_verdict(grouped)
+
+        print("## Hygiene finding counts (by verdict)")
+        print(f"- scores: {needs} needs-work · {ok} ok · {parked} park")
+        print("- sorted by verdict (exclusions first — why we are not fixing):")
+        for key, label, n in by_verdict:
+            meta = VERDICT_META.get(key) or {}
+            reason = meta.get("reason") or ""
+            ids = id_by_v.get(key) or collections.Counter()
+            id_s = ", ".join(f"{i}×{c}" for i, c in ids.most_common(6))
+            print(f"  - [{label}] {n} findings — {reason}")
+            if id_s:
+                print(f"      ids: {id_s}")
+            # Repo rollup for this verdict
+            repos = sorted({i["repo"] for i in grouped.get(key) or [] if i.get("repo")})
+            if repos:
+                print(f"      repos: {', '.join(repos)}")
+        print()
+
+        # Active owned leftovers still listed for convenience (ship_only + tier2)
+        print("## Repo hygiene — owned / active-fork detail")
+        for key in ("active_fork", "ship_only", "tier2_skip", "pipeline_skip"):
+            items = grouped.get(key) or []
+            if not items:
+                continue
+            print(f"### {VERDICT_META[key]['label']}")
+            by_repo: dict[str, list] = collections.defaultdict(list)
+            for i in items:
+                by_repo[i["repo"]].append(i)
+            for repo in sorted(by_repo):
+                ids = ", ".join(
+                    f"{x['finding_id']}({x.get('severity')})" for x in by_repo[repo]
+                )
+                url = by_repo[repo][0].get("url") or ""
+                print(f"- [{key}] {repo}: {ids}")
+                if url:
+                    print(f"    {url}")
+        print()
+
     print("## Quick wins (heuristic)")
-    # Single-alert dependabot repos
     for d in report.get("dependabot") or []:
         if d["total"] <= 3:
             sev = d.get("by_severity") or {}
             print(
                 f"- [fix-direct] {d['repo']}: Dependabot {d['total']} {sev} → {d['url']}"
             )
-    # CodeQL missing permissions / small counts
     for c in report.get("code_scanning") or []:
         tools = c.get("by_tool") or {}
         if c["total"] <= 5 and "CodeQL" in tools:

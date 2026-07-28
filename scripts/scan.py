@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Scan GitHub owner repos for Dependabot, code/secret scanning, PRs, issues, and local dirty trees.
+"""Scan GitHub owner repos for Dependabot, code/secret scanning, PRs, issues,
+repo hygiene (config/automation), and local dirty trees.
 
 Read-only. Requires: gh (authenticated), python3, jq optional.
 """
@@ -7,9 +8,11 @@ Read-only. Requires: gh (authenticated), python3, jq optional.
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -18,6 +21,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config.toml"
+
+# Path patterns → Dependabot package-ecosystem ids.
+MANIFEST_ECOSYSTEMS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(^|/)go\.mod$"), "gomod"),
+    (re.compile(r"(^|/)package-lock\.json$|(^|/)package\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.yaml$"), "npm"),
+    (re.compile(r"(^|/)requirements[^/]*\.txt$|(^|/)Pipfile(\.lock)?$|(^|/)poetry\.lock$|(^|/)pyproject\.toml$"), "pip"),
+    (re.compile(r"(^|/)Cargo\.(toml|lock)$"), "cargo"),
+    (re.compile(r"(^|/)Gemfile(\.lock)?$"), "bundler"),
+    (re.compile(r"(^|/)composer\.(json|lock)$"), "composer"),
+    (re.compile(r"(^|/)Dockerfile[^/]*$|(^|/)docker-compose\.ya?ml$"), "docker"),
+    (re.compile(r"(^|/)\.github/workflows/[^/]+\.ya?ml$"), "github-actions"),
+]
+
+DEPENDABOT_ECOSYSTEM_RE = re.compile(
+    r"package-ecosystem:\s*[\"']?([a-zA-Z0-9_-]+)[\"']?"
+)
 
 
 def load_config(path: Path) -> dict:
@@ -70,6 +89,43 @@ def gh_api(path: str):
         return None, "invalid_json"
 
 
+def gh_api_object(path: str):
+    """GET a single JSON object (no pagination flatten). Returns (dict|None, err)."""
+    p = run_gh(["api", path])
+    if p.returncode != 0:
+        err = (p.stderr or p.stdout or "").strip()
+        if "404" in err or "disabled" in err.lower():
+            return None, "disabled_or_unavailable"
+        return None, err.split("\n")[0][:200]
+    if not p.stdout.strip():
+        return None, "empty"
+    try:
+        data = json.loads(p.stdout)
+        if isinstance(data, dict):
+            return data, None
+        return None, "not_object"
+    except json.JSONDecodeError:
+        return None, "invalid_json"
+
+
+def gh_api_status(path: str) -> int | None:
+    """GET and return HTTP status (via -i). None on unexpected failure."""
+    p = run_gh(["api", path, "-i"])
+    # gh still exits non-zero on 404; parse status from headers either way.
+    text = (p.stdout or "") + "\n" + (p.stderr or "")
+    m = re.search(r"HTTP/\d(?:\.\d)?\s+(\d{3})", text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def sa_status(security_and_analysis: dict | None, key: str) -> str | None:
+    if not security_and_analysis:
+        return None
+    block = security_and_analysis.get(key) or {}
+    return block.get("status")
+
+
 def list_repos(owner: str) -> list[dict]:
     data, err = gh_json(
         [
@@ -79,12 +135,388 @@ def list_repos(owner: str) -> list[dict]:
             "--limit",
             "200",
             "--json",
-            "name,url,isPrivate,updatedAt,description,defaultBranchRef",
+            "name,url,isPrivate,isFork,isArchived,updatedAt,description,defaultBranchRef",
         ]
     )
     if err or data is None:
         raise SystemExit(f"Failed to list repos: {err}")
     return data
+
+
+def _default_branch(repo_meta: dict) -> str:
+    ref = repo_meta.get("defaultBranchRef")
+    if isinstance(ref, dict):
+        return ref.get("name") or "main"
+    if isinstance(ref, str) and ref:
+        return ref
+    return repo_meta.get("default_branch") or "main"
+
+
+def _repo_tree_paths(owner: str, repo: str, branch: str) -> list[str] | None:
+    """Recursive git tree paths for default branch, or None if unavailable."""
+    data, err = gh_api_object(f"repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
+    if data is None:
+        return None
+    if data.get("truncated"):
+        # Truncated trees still usable for shallow path checks; continue.
+        pass
+    return [t.get("path") for t in (data.get("tree") or []) if t.get("path")]
+
+
+def _detect_ecosystems(paths: list[str]) -> set[str]:
+    found: set[str] = set()
+    for path in paths:
+        for pat, eco in MANIFEST_ECOSYSTEMS:
+            if pat.search(path):
+                found.add(eco)
+    return found
+
+
+def _fetch_file_text(owner: str, repo: str, path: str) -> str | None:
+    data, err = gh_api_object(f"repos/{owner}/{repo}/contents/{path}")
+    if not data or data.get("type") != "file":
+        return None
+    content = data.get("content")
+    if not content:
+        return None
+    try:
+        return base64.b64decode(content).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _dependabot_ecosystems(yml_text: str | None) -> set[str]:
+    if not yml_text:
+        return set()
+    return set(DEPENDABOT_ECOSYSTEM_RE.findall(yml_text))
+
+
+def _finding(
+    fid: str,
+    severity: str,
+    size: str,
+    message: str,
+) -> dict:
+    return {
+        "id": fid,
+        "severity": severity,
+        "size": size,
+        "message": message,
+    }
+
+
+def scan_repo_hygiene(
+    owner: str,
+    repo: str,
+    list_meta: dict | None = None,
+    active_forks: set[str] | None = None,
+) -> dict:
+    """Read-only Tier-1/2 config audit for one repo."""
+    list_meta = list_meta or {}
+    active_forks = active_forks or set()
+    meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
+    if meta is None:
+        return {
+            "repo": repo,
+            "score": "unavailable",
+            "findings": [
+                _finding(
+                    "repo_meta_unavailable",
+                    "low",
+                    "park",
+                    f"Could not load repo metadata: {meta_err}",
+                )
+            ],
+            "url": f"https://github.com/{owner}/{repo}",
+        }
+
+    is_fork = bool(meta.get("fork") if meta.get("fork") is not None else list_meta.get("isFork"))
+    is_archived = bool(
+        meta.get("archived")
+        if meta.get("archived") is not None
+        else list_meta.get("isArchived")
+    )
+    is_private = bool(meta.get("private"))
+    branch = meta.get("default_branch") or _default_branch(list_meta)
+    sa = meta.get("security_and_analysis") or {}
+    delete_branch = bool(meta.get("delete_branch_on_merge"))
+
+    vuln_status = gh_api_status(f"repos/{owner}/{repo}/vulnerability-alerts")
+    vuln_alerts_on = vuln_status == 204
+
+    dep_sec = sa_status(sa, "dependabot_security_updates")
+    secret_scan = sa_status(sa, "secret_scanning")
+    push_prot = sa_status(sa, "secret_scanning_push_protection")
+
+    # Private repos without GitHub Advanced Security cannot enable secret scanning /
+    # push protection; security_and_analysis is often null or stuck at disabled.
+    secret_scanning_unavailable_private = is_private and secret_scan != "enabled"
+    if secret_scanning_unavailable_private:
+        secret_scan_report = "unavailable_private"
+        push_prot_report = "unavailable_private"
+    else:
+        secret_scan_report = secret_scan
+        push_prot_report = push_prot
+
+    # Dependabot security updates: only flag explicit "disabled". Missing/null with
+    # vulnerability alerts already on is treated as OK (private/API quirks).
+    dep_sec_report = dep_sec
+    if dep_sec is None and vuln_alerts_on:
+        dep_sec_report = "assumed_on"
+
+    default_setup, _ = gh_api_object(f"repos/{owner}/{repo}/code-scanning/default-setup")
+    cs_state = (default_setup or {}).get("state")  # configured | not-configured | …
+
+    paths = _repo_tree_paths(owner, repo, branch) or []
+    detected = _detect_ecosystems(paths)
+    has_workflows = any(p.startswith(".github/workflows/") and p.endswith((".yml", ".yaml")) for p in paths)
+    has_dependabot_yml = any(
+        p in (".github/dependabot.yml", ".github/dependabot.yaml") for p in paths
+    )
+    has_renovate = any(
+        p in ("renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5")
+        for p in paths
+    )
+    has_codeql_workflow = any(
+        "codeql" in p.lower() and p.startswith(".github/workflows/") for p in paths
+    )
+    has_osv_workflow = any(
+        "osv" in p.lower() and p.startswith(".github/workflows/") for p in paths
+    )
+    has_dependency_review = any(
+        "dependency-review" in p.lower() and p.startswith(".github/workflows/") for p in paths
+    )
+    has_lockfile = any(
+        p.endswith(
+            (
+                "package-lock.json",
+                "yarn.lock",
+                "pnpm-lock.yaml",
+                "go.sum",
+                "Pipfile.lock",
+                "poetry.lock",
+                "Cargo.lock",
+                "composer.lock",
+                "Gemfile.lock",
+            )
+        )
+        or p == "go.sum"
+        for p in paths
+    )
+    # Code-ish if we detected a language ecosystem (excluding actions-only empty repos).
+    has_code = bool(detected - {"github-actions"}) or any(
+        p.endswith((".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java")) for p in paths[:5000]
+    )
+
+    configured_ecosystems: set[str] = set()
+    dependabot_text = None
+    if has_dependabot_yml:
+        dep_path = (
+            ".github/dependabot.yml"
+            if ".github/dependabot.yml" in paths
+            else ".github/dependabot.yaml"
+        )
+        dependabot_text = _fetch_file_text(owner, repo, dep_path)
+        configured_ecosystems = _dependabot_ecosystems(dependabot_text)
+
+    findings: list[dict] = []
+    is_active_fork = is_fork and repo in active_forks
+    # Active forks get fix-direct; other forks/archived stay park.
+    park_size = (
+        "fix-direct"
+        if is_active_fork
+        else ("park" if is_fork or is_archived else "fix-direct")
+    )
+
+    if is_archived:
+        return {
+            "repo": repo,
+            "score": "park",
+            "fork": is_fork,
+            "archived": True,
+            "private": is_private,
+            "default_branch": branch,
+            "detected_ecosystems": sorted(detected),
+            "dependabot_ecosystems": sorted(configured_ecosystems),
+            "findings": [
+                _finding("archived", "low", "park", "Archived — skip hygiene fixes")
+            ],
+            "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
+        }
+
+    if not vuln_alerts_on:
+        findings.append(
+            _finding(
+                "vuln_alerts_off",
+                "high",
+                park_size,
+                "Vulnerability alerts disabled — Dependabot alerts will not surface",
+            )
+        )
+
+    if dep_sec == "disabled":
+        findings.append(
+            _finding(
+                "dependabot_security_updates_off",
+                "high",
+                park_size,
+                "Dependabot security updates disabled — enable for auto security PRs",
+            )
+        )
+    elif dep_sec is None and not vuln_alerts_on:
+        # No SA field and alerts off — still call out enabling security updates.
+        findings.append(
+            _finding(
+                "dependabot_security_updates_off",
+                "high",
+                park_size,
+                "Dependabot security updates not confirmed — enable for auto security PRs",
+            )
+        )
+
+    if detected and not has_renovate and not has_dependabot_yml:
+        findings.append(
+            _finding(
+                "missing_dependabot_yml",
+                "high",
+                park_size,
+                "No .github/dependabot.yml — add security-only config (see templates/)",
+            )
+        )
+    elif has_dependabot_yml and not has_renovate:
+        missing = detected - configured_ecosystems
+        # Always want github-actions when workflows exist.
+        if has_workflows and "github-actions" not in configured_ecosystems:
+            missing.add("github-actions")
+        for eco in sorted(missing):
+            fid = (
+                "missing_github_actions_ecosystem"
+                if eco == "github-actions"
+                else f"missing_ecosystem_{eco}"
+            )
+            findings.append(
+                _finding(
+                    fid,
+                    "medium",
+                    park_size,
+                    f"dependabot.yml missing package-ecosystem: {eco}",
+                )
+            )
+
+    if has_renovate and has_dependabot_yml:
+        findings.append(
+            _finding(
+                "renovate_and_dependabot",
+                "low",
+                "park",
+                "Renovate + Dependabot both present — avoid dual version-update bots",
+            )
+        )
+    elif has_renovate:
+        findings.append(
+            _finding(
+                "renovate_present",
+                "low",
+                "park",
+                "Renovate present — skip Dependabot version-update advice",
+            )
+        )
+
+    if not secret_scanning_unavailable_private and secret_scan != "enabled":
+        findings.append(
+            _finding(
+                "secret_scanning_off",
+                "high",
+                park_size,
+                "Secret scanning disabled",
+            )
+        )
+
+    if not secret_scanning_unavailable_private and push_prot != "enabled":
+        findings.append(
+            _finding(
+                "push_protection_off",
+                "medium",
+                park_size,
+                "Secret scanning push protection disabled",
+            )
+        )
+
+    code_scanning_ok = cs_state == "configured" or has_codeql_workflow or has_osv_workflow
+    if has_code and not code_scanning_ok:
+        findings.append(
+            _finding(
+                "code_scanning_not_configured",
+                "medium",
+                park_size,
+                "Code scanning default setup not configured (and no CodeQL/osv workflow)",
+            )
+        )
+
+    if has_code and not has_workflows:
+        findings.append(
+            _finding(
+                "missing_ci_workflow",
+                "medium",
+                park_size,
+                "No .github/workflows — CI needed so Dependabot PRs are safe to merge",
+            )
+        )
+
+    # Tier 2 (low): only for non-fork active repos
+    if not is_fork:
+        if not delete_branch:
+            findings.append(
+                _finding(
+                    "delete_branch_on_merge_off",
+                    "low",
+                    "fix-direct",
+                    "Auto-delete head branches is off (repo setting)",
+                )
+            )
+        if has_lockfile and has_workflows and not has_dependency_review:
+            findings.append(
+                _finding(
+                    "dependency_review_missing",
+                    "low",
+                    "fix-direct",
+                    "No dependency-review workflow — consider for PRs with lockfiles",
+                )
+            )
+
+    if is_fork and not is_active_fork:
+        for f in findings:
+            f["size"] = "park"
+        score = "park"
+    elif not findings:
+        score = "ok"
+    elif any(f["severity"] in ("high", "medium") for f in findings):
+        score = "needs-work"
+    else:
+        score = "needs-work"
+
+    return {
+        "repo": repo,
+        "score": score,
+        "fork": is_fork,
+        "active_fork": is_active_fork,
+        "archived": is_archived,
+        "private": is_private,
+        "default_branch": branch,
+        "vuln_alerts": vuln_alerts_on,
+        "dependabot_security_updates": dep_sec_report,
+        "secret_scanning": secret_scan_report,
+        "push_protection": push_prot_report,
+        "code_scanning_default_setup": cs_state,
+        "delete_branch_on_merge": delete_branch,
+        "has_dependabot_yml": has_dependabot_yml,
+        "has_renovate": has_renovate,
+        "has_workflows": has_workflows,
+        "detected_ecosystems": sorted(detected),
+        "dependabot_ecosystems": sorted(configured_ecosystems),
+        "findings": findings,
+        "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
+    }
 
 
 def scan_dependabot(owner: str, repo: str) -> dict | None:
@@ -388,6 +820,7 @@ def print_summary(report: dict) -> None:
     secrets = report["secrets"]
     prs = report["prs"]
     issues = report["issues"]
+    hygiene = report.get("repo_hygiene") or []
 
     print("=== SUMMARY ===")
     print(f"owner: {report['owner']}")
@@ -408,7 +841,35 @@ def print_summary(report: dict) -> None:
     pipe_issues = sum(1 for i in issues if i["classification"] == "pipeline")
     print(f"pipeline-classified PRs: {pipe_prs}")
     print(f"pipeline-classified issues: {pipe_issues}")
+    if hygiene:
+        needs = sum(1 for h in hygiene if h.get("score") == "needs-work")
+        ok = sum(1 for h in hygiene if h.get("score") == "ok")
+        parked = sum(1 for h in hygiene if h.get("score") == "park")
+        finding_n = sum(len(h.get("findings") or []) for h in hygiene)
+        print(
+            f"repo hygiene: {needs} needs-work · {ok} ok · {parked} park · "
+            f"{finding_n} findings"
+        )
     print()
+
+    if hygiene:
+        actionable = [
+            h
+            for h in hygiene
+            if h.get("score") == "needs-work"
+            and any(f.get("size") == "fix-direct" for f in (h.get("findings") or []))
+        ]
+        if actionable:
+            print("--- Repo hygiene (needs-work, non-fork) ---")
+            for h in sorted(
+                actionable,
+                key=lambda x: -len(
+                    [f for f in (x.get("findings") or []) if f.get("severity") == "high"]
+                ),
+            ):
+                ids = ", ".join(f["id"] for f in (h.get("findings") or [])[:6])
+                print(f"  {h['repo']}: {h['score']} — {ids}")
+            print()
 
     if dep:
         print("--- Dependabot by repo ---")
@@ -484,6 +945,11 @@ def main() -> int:
         help="Skip Dependabot / code / secret scanning",
     )
     ap.add_argument(
+        "--skip-hygiene",
+        action="store_true",
+        help="Skip repo hygiene / automation config audit",
+    )
+    ap.add_argument(
         "--repos",
         help="Comma-separated repo names to scan (default: all owned)",
     )
@@ -506,6 +972,7 @@ def main() -> int:
     secrets = []
     prs = []
     issues = []
+    repo_hygiene = []
 
     for i, r in enumerate(repos, 1):
         name = r["name"]
@@ -520,6 +987,15 @@ def main() -> int:
             s = scan_secrets(owner, name)
             if s and s.get("total"):
                 secrets.append(s)
+        if not args.skip_hygiene:
+            repo_hygiene.append(
+                scan_repo_hygiene(
+                    owner,
+                    name,
+                    r,
+                    active_forks=set(cfg.get("active_forks") or []),
+                )
+            )
         for pr in scan_prs(owner, name, cfg):
             pr["size"] = suggest_size(pr, "pr")
             prs.append(pr)
@@ -528,6 +1004,17 @@ def main() -> int:
             issues.append(issue)
 
     local = [] if args.skip_local else local_status(gitroot, owner)
+
+    def _hygiene_sort_key(h: dict):
+        sev_rank = {"high": 0, "medium": 1, "low": 2}
+        findings = h.get("findings") or []
+        worst = min((sev_rank.get(f.get("severity"), 9) for f in findings), default=9)
+        return (
+            0 if h.get("score") == "needs-work" else 1,
+            worst,
+            -len(findings),
+            h.get("repo") or "",
+        )
 
     report = {
         "scanned_at": datetime.now(timezone.utc).isoformat(),
@@ -538,6 +1025,7 @@ def main() -> int:
         "dependabot": sorted(dependabot, key=lambda x: -x["total"]),
         "code_scanning": sorted(code_scanning, key=lambda x: -x["total"]),
         "secrets": sorted(secrets, key=lambda x: -x.get("total", 0)),
+        "repo_hygiene": sorted(repo_hygiene, key=_hygiene_sort_key),
         "prs": prs,
         "issues": issues,
         "local": local,
@@ -545,6 +1033,7 @@ def main() -> int:
             "pipeline_repos": cfg.get("pipeline_repos"),
             "pipeline_labels": cfg.get("pipeline_labels"),
             "never_merge_labels": cfg.get("never_merge_labels"),
+            "active_forks": cfg.get("active_forks"),
         },
     }
 

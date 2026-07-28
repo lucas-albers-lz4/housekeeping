@@ -1,0 +1,16 @@
+# Minimal snippet: bump / security-track GitHub Actions only.
+# Merge into an existing .github/dependabot.yml if other ecosystems already exist.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
