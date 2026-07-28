@@ -1,0 +1,10 @@
+out/
+*.pyc
+__pycache__/
+.venv/
+.DS_Store
+*.canvas.data.json
+.env
+.env.*
+*.pem
+credentials*.json

@@ -1,0 +1,31 @@
+# Defaults for lucas-albers-lz4 multi-repo cleanup scans.
+# Override with --owner / --gitroot / --config.
+
+owner = "lucas-albers-lz4"
+gitroot = "~/gitroot"
+out_dir = "out"
+
+# Repos whose open issues/PRs are often agent-pipeline work, not human cleanup backlog.
+# Always inspect labels before classifying as debt.
+pipeline_repos = ["sre-ai-llm-work"]
+
+# Labels that mean "leave to workflow" (extend as needed).
+pipeline_labels = [
+  "pipeline",
+  "no-triage",
+  "source-note",
+  "guide-update",
+  "miner-eval",
+  "new-source",
+  "new-seed",
+  "mining-queued",
+  "mining-complete",
+  "source-submission",
+  "triaged:text",
+  "triaged:failure",
+  "triaged:repo",
+  "pre-screen:pass",
+]
+
+# Never suggest merging PRs with these labels.
+never_merge_labels = ["miner-eval"]
