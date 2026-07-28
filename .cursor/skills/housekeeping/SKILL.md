@@ -1,21 +1,21 @@
 ---
-name: repo-cleanup
+name: housekeeping
 description: >-
   Multi-repo GitHub cleanup for lucas-albers-lz4: scan Dependabot, code/secret
   scanning, open PRs/issues, and ~/gitroot dirty trees; classify fix-direct vs
   batch-PR vs issue/PR vs pipeline; produce a triage board. Use when this
-  repo-cleanup workspace is open and the user asks to scan repos, clean up
+  housekeeping workspace is open and the user asks to scan repos, clean up
   alerts/PRs/issues, or run a cross-repo hygiene pass.
 ---
 
-# Repo cleanup
+# Housekeeping (repo cleanup)
 
 Read-only scan first. Fix only after the user picks a queue item. Never treat
 labeled **sre-ai-llm-work** pipeline work as cleanup debt.
 
 ## Before anything else
 
-1. Confirm workspace is `repo-cleanup` (this project).
+1. Confirm workspace is `housekeeping` (this project).
 2. Read `config.toml` for owner, gitroot, pipeline labels.
 3. Run the scan scripts (do not re-invent ad-hoc `gh` loops unless scripts fail).
 4. Present a triage queue; wait for the user to choose what to fix.
@@ -74,7 +74,7 @@ Details: [reference.md](reference.md).
 - After picking a target repo: update its working copy (`git fetch`/`pull` as
   needed), then `move_agent_to_root` before edits.
 - For canvases: put triage boards under this project’s `canvases/` only when the
-  workspace is `repo-cleanup`; embed scan data inline (no live fetch in canvas).
+  workspace is `housekeeping`; embed scan data inline (no live fetch in canvas).
 
 ## Deliverable shape
 
@@ -88,4 +88,4 @@ Details: [reference.md](reference.md).
 - `scripts/scan.py` — owner-wide scan
 - `scripts/triage_queue.py` — queue printer
 - `config.toml` — owner, gitroot, pipeline allowlists
-- [reference.md](reference.md) — labels, size playbook, known gotchas
+- `out/scan-latest.json` — latest report (gitignored)
