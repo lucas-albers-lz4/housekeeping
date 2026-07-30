@@ -54,6 +54,10 @@ Forks and archived repos score `park` — **except** forks listed in
 `config.toml` `active_forks`, which triage as **Active fork — fix** (same
 Dependabot/settings bar as owned repos).
 
+Archived repos: hygiene findings, open PRs/issues, and security alerts are
+**parked** (not suggested as `batch-pr` / fix-direct). The scanner still lists
+open PRs/issues under an archived-park section so nothing is invisible.
+
 Current `active_forks`: cert-manager-webhook-duckdns, helm-whatup,
 docker-duckdns, jobs-filterer-for-linkedin, NorseWorld-Ragnarok,
 easy-aws-login.
@@ -85,6 +89,7 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
 
 ### park
 
+- Archived repos (open Dependabot PRs, leftover issues — skip, do not batch-merge)
 - `hermes-agent`-style osv-scanner floods on forks you are not actively shipping
 - Optional-later design issues already marked deferred
 - Upstream/vendor checkouts under `gitroot` that you do not own
