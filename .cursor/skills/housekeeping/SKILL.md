@@ -50,7 +50,7 @@ Requires authenticated `gh` with access to the owner’s repos (including privat
 | `issue-pr` | Real design/bug work | Issue → PR → review |
 | `pipeline` | Agent workflow queue (labels) | Leave alone unless user asks |
 | `never-merge` | e.g. `miner-eval` | Do not merge |
-| `park` | Fork noise / low-value / deferred | Skip |
+| `park` | Fork noise / archived / low-value / deferred | Skip |
 
 **Repo hygiene** findings (`repo_hygiene` in the report) are missing automation
 config (Dependabot.yml, push protection, CodeQL default setup, etc.) — not the

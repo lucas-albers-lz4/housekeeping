@@ -12,6 +12,7 @@ the Claude Code entrypoint (same pattern as `sre-ai-llm-work`).
 - Hygiene findings ≠ CVE debt. Use `templates/` for Dependabot baselines.
 - Forks listed in `config.toml` `active_forks` are maintained — fix them; other
   forks default to park.
+- Archived repos: park PRs/issues/alerts — do not treat as cleanup debt.
 
 ## Quick commands
 

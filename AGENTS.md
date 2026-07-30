@@ -16,7 +16,9 @@ This workspace is the **housekeeping** toolkit for multi-repo GitHub hygiene und
 5. Hygiene findings (missing Dependabot.yml / security settings) are **config
    debt** — use `templates/` for fix-direct PRs; do not confuse with open CVE piles.
 6. Forks in `config.toml` `active_forks` are maintained — fix hygiene, do not park.
-7. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
+7. **Archived** repos: park hygiene, PRs, issues, and alerts — do not suggest
+   `batch-pr` merges (e.g. ferrovis).
+8. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
    without an explicit user request. Never merge `miner-eval` PRs.
 
 ## Commands

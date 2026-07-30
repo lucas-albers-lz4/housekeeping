@@ -110,21 +110,41 @@ def main() -> int:
 
     print()
     print("## PRs to triage")
+    parked_prs = []
     for p in report.get("prs") or []:
         cls = p.get("classification") or "human"
+        if cls == "park":
+            parked_prs.append(p)
+            continue
         size = p.get("size") or ""
         tag = cls if cls != "human" else size or cls
         print(f"- [{tag}] {p['repo']}#{p['number']} {p['title'][:70]}")
         print(f"    {p['url']}")
+    if parked_prs:
+        print()
+        print("## PRs parked (archived — skip)")
+        for p in parked_prs:
+            print(f"- [park] {p['repo']}#{p['number']} {p['title'][:70]}")
+            print(f"    {p['url']}")
 
     print()
     print("## Issues to triage")
+    parked_issues = []
     for i in report.get("issues") or []:
         cls = i.get("classification") or "human"
+        if cls == "park":
+            parked_issues.append(i)
+            continue
         size = i.get("size") or ""
         tag = cls if cls != "human" else size or cls
         print(f"- [{tag}] {i['repo']}#{i['number']} {i['title'][:70]}")
         print(f"    {i['url']}")
+    if parked_issues:
+        print()
+        print("## Issues parked (archived — skip)")
+        for i in parked_issues:
+            print(f"- [park] {i['repo']}#{i['number']} {i['title'][:70]}")
+            print(f"    {i['url']}")
 
     dirty = [r for r in (report.get("local") or []) if r.get("dirty")]
     if dirty:

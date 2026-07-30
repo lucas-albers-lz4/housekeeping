@@ -640,7 +640,12 @@ def classify_item(
     repo: str,
     labels: list[str],
     cfg: dict,
+    *,
+    archived: bool = False,
 ) -> str:
+    # Archived repos are not cleanup debt — open PRs/issues stay visible but parked.
+    if archived:
+        return "park"
     pipeline_repos = set(cfg.get("pipeline_repos") or [])
     pipeline_labels = set(cfg.get("pipeline_labels") or [])
     never_merge = set(cfg.get("never_merge_labels") or [])
@@ -653,7 +658,9 @@ def classify_item(
     return "human"
 
 
-def scan_prs(owner: str, repo: str, cfg: dict) -> list[dict]:
+def scan_prs(
+    owner: str, repo: str, cfg: dict, *, archived: bool = False
+) -> list[dict]:
     data, err = gh_json(
         [
             "pr",
@@ -684,7 +691,9 @@ def scan_prs(owner: str, repo: str, cfg: dict) -> list[dict]:
                 "is_bot": author.startswith("app/") or "dependabot" in author,
                 "labels": labels,
                 "isDraft": pr.get("isDraft"),
-                "classification": classify_item(repo, labels, cfg),
+                "classification": classify_item(
+                    repo, labels, cfg, archived=archived
+                ),
                 "createdAt": pr.get("createdAt"),
                 "updatedAt": pr.get("updatedAt"),
             }
@@ -692,7 +701,9 @@ def scan_prs(owner: str, repo: str, cfg: dict) -> list[dict]:
     return out
 
 
-def scan_issues(owner: str, repo: str, cfg: dict) -> list[dict]:
+def scan_issues(
+    owner: str, repo: str, cfg: dict, *, archived: bool = False
+) -> list[dict]:
     data, err = gh_json(
         [
             "issue",
@@ -720,7 +731,9 @@ def scan_issues(owner: str, repo: str, cfg: dict) -> list[dict]:
                 "url": issue.get("url"),
                 "author": (issue.get("author") or {}).get("login"),
                 "labels": labels,
-                "classification": classify_item(repo, labels, cfg),
+                "classification": classify_item(
+                    repo, labels, cfg, archived=archived
+                ),
                 "createdAt": issue.get("createdAt"),
                 "updatedAt": issue.get("updatedAt"),
             }
@@ -799,6 +812,8 @@ def local_status(gitroot: Path, owner: str) -> list[dict]:
 def suggest_size(item: dict, kind: str) -> str:
     """Heuristic size tag for triage boards."""
     cls = item.get("classification")
+    if cls == "park":
+        return "park"
     if cls == "pipeline":
         return "pipeline"
     if cls == "never-merge":
@@ -839,8 +854,13 @@ def print_summary(report: dict) -> None:
     print(f"open issues: {len(issues)}")
     pipe_prs = sum(1 for p in prs if p["classification"] in ("pipeline", "never-merge"))
     pipe_issues = sum(1 for i in issues if i["classification"] == "pipeline")
+    park_prs = sum(1 for p in prs if p["classification"] == "park")
+    park_issues = sum(1 for i in issues if i["classification"] == "park")
     print(f"pipeline-classified PRs: {pipe_prs}")
     print(f"pipeline-classified issues: {pipe_issues}")
+    if park_prs or park_issues:
+        print(f"archived-parked PRs: {park_prs}")
+        print(f"archived-parked issues: {park_issues}")
     if hygiene:
         needs = sum(1 for h in hygiene if h.get("score") == "needs-work")
         ok = sum(1 for h in hygiene if h.get("score") == "ok")
@@ -884,7 +904,8 @@ def print_summary(report: dict) -> None:
         print()
 
     human_prs = [p for p in prs if p["classification"] == "human"]
-    pipe = [p for p in prs if p["classification"] != "human"]
+    pipe = [p for p in prs if p["classification"] in ("pipeline", "never-merge")]
+    park_pr_list = [p for p in prs if p["classification"] == "park"]
     if human_prs:
         print("--- Open PRs (human / dep triage) ---")
         for p in human_prs:
@@ -901,9 +922,18 @@ def print_summary(report: dict) -> None:
                 f"{p['title'][:70]}"
             )
         print()
+    if park_pr_list:
+        print("--- Open PRs (archived — park) ---")
+        for p in park_pr_list:
+            print(
+                f"  {p['repo']}#{p['number']} [park] "
+                f"{p['title'][:70]}"
+            )
+        print()
 
     human_issues = [i for i in issues if i["classification"] == "human"]
-    pipe_i = [i for i in issues if i["classification"] != "human"]
+    pipe_i = [i for i in issues if i["classification"] == "pipeline"]
+    park_issue_list = [i for i in issues if i["classification"] == "park"]
     if human_issues:
         print("--- Open issues (human) ---")
         for i in human_issues:
@@ -914,6 +944,11 @@ def print_summary(report: dict) -> None:
         for i in pipe_i:
             labs = ",".join(i["labels"][:5])
             print(f"  {i['repo']}#{i['number']} [{labs}]: {i['title'][:60]}")
+        print()
+    if park_issue_list:
+        print("--- Open issues (archived — park) ---")
+        for i in park_issue_list:
+            print(f"  {i['repo']}#{i['number']} [park]: {i['title'][:60]}")
         print()
 
     dirty = [r for r in report.get("local", []) if r.get("dirty")]
@@ -976,8 +1011,10 @@ def main() -> int:
 
     for i, r in enumerate(repos, 1):
         name = r["name"]
+        is_archived = bool(r.get("isArchived"))
         print(f"  [{i}/{len(repos)}] {name}", file=sys.stderr)
-        if not args.skip_alerts:
+        # Archived: no alert debt — hygiene still records park reason.
+        if not args.skip_alerts and not is_archived:
             d = scan_dependabot(owner, name)
             if d and d["total"]:
                 dependabot.append(d)
@@ -996,10 +1033,10 @@ def main() -> int:
                     active_forks=set(cfg.get("active_forks") or []),
                 )
             )
-        for pr in scan_prs(owner, name, cfg):
+        for pr in scan_prs(owner, name, cfg, archived=is_archived):
             pr["size"] = suggest_size(pr, "pr")
             prs.append(pr)
-        for issue in scan_issues(owner, name, cfg):
+        for issue in scan_issues(owner, name, cfg, archived=is_archived):
             issue["size"] = suggest_size(issue, "issue")
             issues.append(issue)
 
