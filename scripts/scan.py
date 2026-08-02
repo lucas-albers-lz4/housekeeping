@@ -334,6 +334,42 @@ def _remote_branch_exists(owner: str, repo: str, name: str) -> bool:
     return p.returncode == 0
 
 
+def _open_pr_branch_names(owner: str, repo: str) -> set[str] | None:
+    """Head + base ref names for all open PRs. None = fail closed (API error)."""
+    names: set[str] = set()
+    page = 1
+    while page <= 50:
+        p = run_gh(
+            [
+                "api",
+                f"repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}",
+            ]
+        )
+        if p.returncode != 0:
+            return None
+        if not p.stdout.strip():
+            break
+        try:
+            batch = json.loads(p.stdout)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(batch, list):
+            return None
+        if not batch:
+            break
+        for pr in batch:
+            head = ((pr.get("head") or {}).get("ref") or "").strip()
+            base = ((pr.get("base") or {}).get("ref") or "").strip()
+            if head:
+                names.add(head)
+            if base:
+                names.add(base)
+        if len(batch) < 100:
+            break
+        page += 1
+    return names
+
+
 def _scan_stale_merged_branches(
     owner: str,
     repo: str,
@@ -343,7 +379,9 @@ def _scan_stale_merged_branches(
     """Suggest-only: remote heads of merged PRs past retention, still present.
 
     Cautious filters — never includes default/protected branches, heads/bases of
-    open PRs, or branches without a merged PR. Scan does not delete anything.
+    open PRs, or branches without a merged PR. Uses the *latest* merge per
+    branch name so a recent re-merge keeps the branch out of the list.
+    Fail closed if open PRs cannot be listed. Scan does not delete anything.
     """
     if not cleanup_cfg.get("enabled", True):
         return []
@@ -371,30 +409,13 @@ def _scan_stale_merged_branches(
     if err or not isinstance(merged, list):
         return []
 
-    open_prs, _oerr = gh_json(
-        [
-            "pr",
-            "list",
-            "--repo",
-            f"{owner}/{repo}",
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "headRefName,baseRefName",
-        ]
-    )
-    in_use: set[str] = set()
-    if isinstance(open_prs, list):
-        for pr in open_prs:
-            if pr.get("headRefName"):
-                in_use.add(pr["headRefName"])
-            if pr.get("baseRefName"):
-                in_use.add(pr["baseRefName"])
+    # Fail closed: without a complete open-PR set we must not suggest deletes.
+    in_use = _open_pr_branch_names(owner, repo)
+    if in_use is None:
+        return []
 
-    # Prefer the oldest eligible merged PR per branch name, then verify remote.
-    candidates: dict[str, dict] = {}
+    # Latest merge per headRefName (re-use within retention must not look stale).
+    latest: dict[str, dict] = {}
     for pr in merged:
         name = (pr.get("headRefName") or "").strip()
         merged_at = pr.get("mergedAt") or ""
@@ -408,18 +429,17 @@ def _scan_stale_merged_branches(
             ts = datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp()
         except ValueError:
             continue
-        if ts > cutoff:
-            continue
-        prev = candidates.get(name)
-        if prev is None or ts < prev["_ts"]:
-            candidates[name] = {
+        prev = latest.get(name)
+        if prev is None or ts > prev["_ts"]:
+            latest[name] = {
                 "name": name,
                 "pr": pr.get("number"),
                 "merged_at": merged_at,
                 "_ts": ts,
             }
 
-    rows = sorted(candidates.values(), key=lambda x: x["_ts"])
+    candidates = [row for row in latest.values() if row["_ts"] <= cutoff]
+    rows = sorted(candidates, key=lambda x: x["_ts"])
     out: list[dict] = []
     for row in rows:
         if len(out) >= max_list:
