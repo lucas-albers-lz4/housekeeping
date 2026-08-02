@@ -43,34 +43,44 @@ VERDICT_META = {
     },
     "pipeline_skip": {
         "label": "Pipeline — leave alone",
-        "reason": "sre-ai-llm-work CodeQL optional; avoid pipeline noise.",
+        "reason": "Pipeline repos (config pipeline_repos): skip optional CodeQL noise.",
     },
     "ship_only": {
         "label": "Only if shipping",
-        "reason": "CI / CodeQL on quiet or toolkit repos — fix only if you ship them.",
+        "reason": "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — fix only if you ship them.",
     },
 }
 
-PIPELINE_REPOS = {"sre-ai-llm-work"}
 TIER2_FINDING_IDS = {"dependency_review_missing"}
 
 
-def load_active_forks(config_path: Path | None = None) -> set[str]:
+def _load_config(config_path: Path | None = None) -> dict[str, Any]:
     path = config_path or DEFAULT_CONFIG
     if not path.exists():
-        return set()
+        return {}
     with path.open("rb") as f:
-        cfg = tomllib.load(f)
-    return set(cfg.get("active_forks") or [])
+        return tomllib.load(f)
+
+
+def load_active_forks(config_path: Path | None = None) -> set[str]:
+    return set(_load_config(config_path).get("active_forks") or [])
+
+
+def load_pipeline_repos(config_path: Path | None = None) -> set[str]:
+    return set(_load_config(config_path).get("pipeline_repos") or [])
 
 
 def classify_finding(
     repo_row: dict[str, Any],
     finding: dict[str, Any],
     active_forks: set[str] | None = None,
+    pipeline_repos: set[str] | None = None,
 ) -> str:
     """Return a VERDICT_ORDER key for one finding on one repo."""
     active = active_forks if active_forks is not None else load_active_forks()
+    pipelines = (
+        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
+    )
     fid = finding.get("id") or ""
     repo = repo_row.get("repo") or ""
     if fid == "archived" or repo_row.get("archived"):
@@ -81,7 +91,7 @@ def classify_finding(
         return "park_fork"
     if fid in TIER2_FINDING_IDS:
         return "tier2_skip"
-    if repo in PIPELINE_REPOS and fid == "code_scanning_not_configured":
+    if repo in pipelines and fid == "code_scanning_not_configured":
         return "pipeline_skip"
     return "ship_only"
 
@@ -89,13 +99,17 @@ def classify_finding(
 def group_hygiene_findings(
     hygiene: list[dict[str, Any]],
     active_forks: set[str] | None = None,
+    pipeline_repos: set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Map verdict → list of {repo, finding_id, severity, size, private, fork}."""
     active = active_forks if active_forks is not None else load_active_forks()
+    pipelines = (
+        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
+    )
     grouped: dict[str, list[dict[str, Any]]] = {k: [] for k in VERDICT_ORDER}
     for h in hygiene:
         for f in h.get("findings") or []:
-            verdict = classify_finding(h, f, active)
+            verdict = classify_finding(h, f, active, pipelines)
             grouped.setdefault(verdict, []).append(
                 {
                     "repo": h.get("repo"),

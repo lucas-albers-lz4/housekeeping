@@ -1,7 +1,27 @@
 # AGENTS
 
-This workspace is the **housekeeping** toolkit for multi-repo GitHub hygiene under
-`lucas-albers-lz4`.
+This workspace is the **housekeeping** toolkit: multi-repo GitHub hygiene for
+**one configured owner** (see `config.toml` `owner`).
+
+## Owner scope (sane default — keep in forks)
+
+These defaults are intentional. Forkers may rewrite them, but the shipped
+baseline is **not** a general-purpose “suggest hygiene to any repo on GitHub”
+tool.
+
+1. **Single owner only.** Scan and triage only repos under `config.toml`
+   `owner` (or `--owner`). Never point `gh` / scans / fix PRs at arbitrary
+   third-party users or orgs you do not administer.
+2. **`gh` is for your account.** Authenticate as the operator who owns or
+   administers that `owner`. Do not use this toolkit to mass-comment, open
+   drive-by issues/PRs, or “helpfully” spam suggestions across the public
+   network.
+3. **Forks stay constrained.** If someone forks this repo for reuse, the
+   default remains: set **their** `owner`, scan **their** repos only. That
+   constraint is the irrevocable product intent of these agent rules unless
+   they deliberately change the rules files.
+4. **`--repos` narrows, never expands.** A repo list must be a subset of the
+   configured owner’s repos — never a way to reach outside `owner`.
 
 ## Must follow
 
@@ -9,17 +29,19 @@ This workspace is the **housekeeping** toolkit for multi-repo GitHub hygiene und
    triage / cross-repo work.
 2. Prefer `python3 scripts/scan.py` and `python3 scripts/triage_queue.py` over
    ad-hoc `gh` loops (alerts + repo hygiene + verdicts).
-3. Do **not** treat `sre-ai-llm-work` pipeline-labeled issues/PRs as cleanup debt
-   (labels in `config.toml` `pipeline_labels`).
+3. Do **not** treat pipeline-labeled issues/PRs (labels in `config.toml`
+   `pipeline_labels`, repos in `pipeline_repos`) as cleanup debt.
 4. Before editing another project: `move_agent_to_root` into that checkout under
-   `~/gitroot` — do not edit sibling repos from this workspace.
-5. Hygiene findings (missing Dependabot.yml / security settings) are **config
-   debt** — use `templates/` for fix-direct PRs; do not confuse with open CVE piles.
+   `gitroot` — do not edit sibling repos from this workspace.
+5. Hygiene findings (missing Dependabot.yml / security settings / Node 20
+   action-runtime pins) are **config debt** — use `templates/` for fix-direct
+   PRs; do not confuse with open CVE piles.
 6. Forks in `config.toml` `active_forks` are maintained — fix hygiene, do not park.
 7. **Archived** repos: park hygiene, PRs, issues, and alerts — do not suggest
-   `batch-pr` merges (e.g. ferrovis).
+   `batch-pr` merges.
 8. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
-   without an explicit user request. Never merge `miner-eval` PRs.
+   without an explicit user request. Never merge PRs with labels in
+   `never_merge_labels` (e.g. `miner-eval`).
 
 ## Commands
 
@@ -27,6 +49,7 @@ This workspace is the **housekeeping** toolkit for multi-repo GitHub hygiene und
 python3 scripts/scan.py              # full report → out/scan-latest.json
 python3 scripts/triage_queue.py      # verdict-sorted queue from latest report
 python3 scripts/scan.py --skip-hygiene
+python3 scripts/scan.py --skip-workflow-pins
 python3 scripts/scan.py --repos irr,fwlive
 ```
 
@@ -34,12 +57,13 @@ python3 scripts/scan.py --repos irr,fwlive
 
 | Path | Role |
 |------|------|
-| `config.toml` | owner, gitroot, pipeline labels, `active_forks` |
+| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, Node 20 action mins |
 | `scripts/scan.py` | owner-wide scan |
 | `scripts/triage_queue.py` | queue printer |
 | `scripts/hygiene_verdicts.py` | park / tier2 / active_fork / ship_only |
 | `templates/` | security-only Dependabot, dependency-review |
 | `.cursor/skills/housekeeping/` | Cursor skill |
+| `.cursor/rules/owner-scope.mdc` | Always-on owner-scope agent rule |
 
 ## CLAUDE.md vs AGENTS.md
 

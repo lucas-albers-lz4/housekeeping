@@ -1,4 +1,4 @@
-# Defaults for lucas-albers-lz4 multi-repo cleanup scans.
+# Defaults for multi-repo cleanup scans.
 # Override with --owner / --gitroot / --config.
 
 owner = "lucas-albers-lz4"
@@ -39,3 +39,14 @@ active_forks = [
   "NorseWorld-Ragnarok",
   "easy-aws-login",
 ]
+
+# Min major for first-party actions still on the Node 20 *action runtime*
+# below these versions (GitHub forces Node 24; bump majors to clear CI warnings).
+# Job `node-version:` / setup-python version are unrelated.
+[node20_action_min_majors]
+"actions/checkout" = 5
+"actions/setup-node" = 5
+"actions/setup-python" = 6
+"actions/cache" = 5
+"actions/upload-artifact" = 5
+"actions/download-artifact" = 5

@@ -1,9 +1,10 @@
 ---
 name: housekeeping
 description: >-
-  Multi-repo GitHub cleanup for lucas-albers-lz4: scan Dependabot, code/secret
-  scanning, repo hygiene/automation config, open PRs/issues, and ~/gitroot dirty
-  trees; classify fix-direct vs batch-PR vs issue/PR vs pipeline; produce a triage
+  Multi-repo GitHub cleanup for one configured owner (config.toml): scan
+  Dependabot, code/secret scanning, repo hygiene/automation config (including
+  Node 20 action-runtime pins), open PRs/issues, and gitroot dirty trees;
+  classify fix-direct vs batch-PR vs issue/PR vs pipeline; produce a triage
   board. Use when this housekeeping workspace is open and the user asks to scan
   repos, clean up alerts/PRs/issues, audit Dependabot/security settings, or run a
   cross-repo hygiene pass.
@@ -12,7 +13,15 @@ description: >-
 # Housekeeping (repo cleanup)
 
 Read-only scan first. Fix only after the user picks a queue item. Never treat
-labeled **sre-ai-llm-work** pipeline work as cleanup debt.
+pipeline-labeled work (`pipeline_repos` / `pipeline_labels`) as cleanup debt.
+
+## Owner scope
+
+Target **only** `config.toml` `owner` (or `--owner`). `gh` is for that
+operator’s repos. Do not use this toolkit to spam suggestions, issues, or PRs
+at arbitrary third-party repositories. Forks of this project inherit the same
+default: configure **their** owner and stay inside it (see `AGENTS.md` and
+`.cursor/rules/owner-scope.mdc`).
 
 ## Before anything else
 
@@ -36,6 +45,7 @@ python3 scripts/triage_queue.py
 python3 scripts/scan.py --repos irr,rke2setup,fwlive
 python3 scripts/scan.py --skip-alerts   # PRs/issues/local (+ hygiene) only
 python3 scripts/scan.py --skip-hygiene  # skip config/automation audit
+python3 scripts/scan.py --skip-workflow-pins  # skip Node 20 action-runtime pin fetch
 python3 scripts/scan.py --skip-local
 ```
 

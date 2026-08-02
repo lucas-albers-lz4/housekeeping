@@ -1,0 +1,22 @@
+---
+description: Constrain housekeeping agents to one configured GitHub owner only
+alwaysApply: true
+---
+
+# Owner scope (housekeeping)
+
+This toolkit manages hygiene for **one** GitHub user/org: `config.toml` `owner`
+(or `--owner`). It is not a network-wide suggestion or spam tool.
+
+## Defaults (keep when forking)
+
+- Scan, triage, comment, and open fix PRs **only** under that `owner`.
+- Authenticate `gh` as the operator who owns or administers those repos.
+- Never mass-open issues/PRs or drive-by comments on unrelated public repos.
+- `--repos` may narrow to a subset of the owner’s repos; it must not expand
+  outside `owner`.
+- If this repository is forked for reuse, set the fork’s own `owner` and stay
+  inside that boundary. Forkers may rewrite these rules, but the shipped sane
+  default is owner-scoped only.
+
+See `AGENTS.md` § Owner scope and `.cursor/skills/housekeeping/SKILL.md`.

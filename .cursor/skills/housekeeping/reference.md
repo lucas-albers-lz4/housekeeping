@@ -1,5 +1,12 @@
 # Repo cleanup reference
 
+## Owner scope
+
+Housekeeping targets **one** GitHub `owner` from `config.toml`. Agents must not
+scan or open drive-by issues/PRs outside that owner. Forks of this toolkit keep
+the same default (set their own `owner`). See `AGENTS.md` and
+`.cursor/rules/owner-scope.mdc`.
+
 ## Pipeline labels (sre-ai-llm-work)
 
 Configured in `config.toml`. Non-exhaustive meanings:
@@ -35,6 +42,14 @@ that adds files from `templates/`.
 | Push protection | Enabled on **public** repos (same GHAS limit for private) |
 | Code scanning | Default setup `configured` **or** CodeQL/osv workflow |
 | CI | At least one workflow when the repo has code |
+| Node 20 action runtime | First-party JS actions on Node-24 majors (`checkout`/`setup-node` **v5+**, `setup-python` **v6+**, etc.) |
+
+Finding `node20_action_runtime` (medium, fix-direct): workflows still pin
+majors whose **action runtime** is Node 20 (CI warns they are forced onto
+Node 24). Fix by bumping `uses:` majors in a PR — **not** by changing job
+`node-version:` / language toolchain. Allowlist of min majors is
+`[node20_action_min_majors]` in `config.toml`. Skip with
+`python3 scripts/scan.py --skip-workflow-pins`.
 
 Private repos without GHAS: the scanner records `secret_scanning` /
 `push_protection` as `unavailable_private` and does **not** emit
@@ -72,6 +87,8 @@ easy-aws-login.
 - Merge a green single-package Dependabot PR after glancing at the diff
 - Hygiene: add `dependabot.yml` from templates, enable push protection / security
   updates, turn on CodeQL default setup
+- Hygiene: bump Node-20-runtime action pins (`actions/checkout@v5`,
+  `actions/setup-python@v6`, …) — see `node20_action_runtime` finding
 
 Still use a branch + PR if the change is more than a few lines or CI is flaky.
 
