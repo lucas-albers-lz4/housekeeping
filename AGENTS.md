@@ -37,9 +37,10 @@ tool.
    action-runtime pins) are **config debt** — use `templates/` for fix-direct
    PRs; do not confuse with open CVE piles.
 6. Forks in `config.toml` `active_forks` are maintained — fix hygiene, do not park.
-7. **Archived** repos: park hygiene, PRs, issues, and alerts — do not suggest
+7. Repos in `config.toml` `parked_repos` are explicitly parked (e.g. class clones).
+8. **Archived** repos: park hygiene, PRs, issues, and alerts — do not suggest
    `batch-pr` merges.
-8. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
+9. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
    without an explicit user request. Never merge PRs with labels in
    `never_merge_labels` (e.g. `miner-eval`).
 
