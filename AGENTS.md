@@ -42,7 +42,8 @@ tool.
    `batch-pr` merges.
 9. Scans are **read-only**. No force-push, mass-close, or bulk alert dismiss
    without an explicit user request. Never merge PRs with labels in
-   `never_merge_labels` (e.g. `miner-eval`).
+   `never_merge_labels` (e.g. `miner-eval`). Never delete remote branches
+   from `stale_merged_branches` / suggest-only findings without an explicit ask.
 
 ## Commands
 
@@ -51,6 +52,7 @@ python3 scripts/scan.py              # full report → out/scan-latest.json
 python3 scripts/triage_queue.py      # verdict-sorted queue from latest report
 python3 scripts/scan.py --skip-hygiene
 python3 scripts/scan.py --skip-workflow-pins
+python3 scripts/scan.py --skip-branch-cleanup
 python3 scripts/scan.py --repos irr,fwlive
 ```
 
@@ -58,10 +60,10 @@ python3 scripts/scan.py --repos irr,fwlive
 
 | Path | Role |
 |------|------|
-| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, Node 20 action mins |
+| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, Node 20 mins |
 | `scripts/scan.py` | owner-wide scan |
 | `scripts/triage_queue.py` | queue printer |
-| `scripts/hygiene_verdicts.py` | park / tier2 / active_fork / ship_only |
+| `scripts/hygiene_verdicts.py` | park / tier2 / suggest_only / active_fork / ship_only |
 | `templates/` | security-only Dependabot, dependency-review |
 | `.cursor/skills/housekeeping/` | Cursor skill |
 | `.cursor/rules/owner-scope.mdc` | Always-on owner-scope agent rule |

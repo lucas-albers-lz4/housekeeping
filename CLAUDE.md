@@ -14,6 +14,8 @@ Follow [`AGENTS.md`](AGENTS.md) for all cross-repo hygiene rules (including
   (`pipeline_repos` / `pipeline_labels`).
 - Hygiene findings ≠ CVE debt. Use `templates/` for Dependabot baselines;
   bump Node-20-runtime action majors when `node20_action_runtime` fires.
+- `stale_merged_branches` is suggest-only — never delete remotes without an
+  explicit user ask (`--skip-branch-cleanup` to omit the check).
 - Forks listed in `config.toml` `active_forks` are maintained — fix them; other
   forks default to park.
 - Archived repos: park PRs/issues/alerts — do not treat as cleanup debt.
@@ -24,6 +26,7 @@ Follow [`AGENTS.md`](AGENTS.md) for all cross-repo hygiene rules (including
 python3 scripts/scan.py
 python3 scripts/triage_queue.py
 python3 scripts/scan.py --repos fwlive,irr --skip-local
+python3 scripts/scan.py --skip-branch-cleanup
 ```
 
 Skill details: `.cursor/skills/housekeeping/SKILL.md` and `reference.md`.

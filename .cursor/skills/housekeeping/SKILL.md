@@ -46,6 +46,7 @@ python3 scripts/scan.py --repos irr,rke2setup,fwlive
 python3 scripts/scan.py --skip-alerts   # PRs/issues/local (+ hygiene) only
 python3 scripts/scan.py --skip-hygiene  # skip config/automation audit
 python3 scripts/scan.py --skip-workflow-pins  # skip Node 20 action-runtime pin fetch
+python3 scripts/scan.py --skip-branch-cleanup  # skip suggest-only stale branch check
 python3 scripts/scan.py --skip-local
 ```
 
@@ -60,6 +61,7 @@ Requires authenticated `gh` with access to the owner’s repos (including privat
 | `issue-pr` | Real design/bug work | Issue → PR → review |
 | `pipeline` | Agent workflow queue (labels) | Leave alone unless user asks |
 | `never-merge` | e.g. `miner-eval` | Do not merge |
+| `suggest` | Destructive/ambiguous (stale merged branches) | List only; delete only if user explicitly asks |
 | `park` | Fork noise / archived / low-value / deferred | Skip |
 
 **Repo hygiene** findings (`repo_hygiene` in the report) are missing automation
@@ -86,6 +88,8 @@ Details: [reference.md](reference.md).
 
 - Scans are **read-only**. No force-push, no mass-close, no bulk dismiss of alerts
   without explicit user request.
+- Do **not** delete remote branches from `stale_merged_branches` / suggest-only
+  findings unless the user explicitly asks (and confirm the branch list first).
 - Do not commit secrets; do not paste secret-scanning payloads into chat/canvas.
 - Prefer merging green Dependabot PRs over hand-editing lockfiles when possible.
 - After picking a target repo: update its working copy (`git fetch`/`pull` as

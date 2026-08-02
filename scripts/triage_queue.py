@@ -62,9 +62,15 @@ def main() -> int:
                 print(f"      repos: {', '.join(repos)}")
         print()
 
-        # Active owned leftovers still listed for convenience (ship_only + tier2)
+        # Active owned leftovers still listed for convenience
         print("## Repo hygiene — owned / active-fork detail")
-        for key in ("active_fork", "ship_only", "tier2_skip", "pipeline_skip"):
+        for key in (
+            "active_fork",
+            "ship_only",
+            "suggest_only",
+            "tier2_skip",
+            "pipeline_skip",
+        ):
             items = grouped.get(key) or []
             if not items:
                 continue
