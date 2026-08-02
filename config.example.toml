@@ -1,0 +1,35 @@
+# Example config for the housekeeping scanner.
+# Copy to config.toml and set owner (required):
+#   cp config.example.toml config.toml
+#
+# Override on the CLI: --owner / --gitroot / --config
+#
+# Scope: `owner` is the only GitHub user/org this toolkit targets. Agents and
+# scripts must not scan or open drive-by PRs/issues outside that owner. Forks
+# of this repo should set their own owner and keep that boundary (see AGENTS.md).
+
+owner = "YOUR_GITHUB_USER_OR_ORG"
+gitroot = "~/gitroot"
+out_dir = "out"
+
+# Repos whose issues/PRs are agent/pipeline work — leave labeled items alone.
+pipeline_repos = []
+
+# Labels that mean "leave to workflow" (extend as needed).
+pipeline_labels = []
+
+# Never suggest merging PRs with these labels.
+never_merge_labels = []
+
+# Forks you actively maintain — treat hygiene gaps as fix-direct, not park.
+active_forks = []
+
+# Min major for first-party actions still on the Node 20 *action runtime*
+# below these versions. Job node-version / language toolchain pins are unrelated.
+[node20_action_min_majors]
+"actions/checkout" = 5
+"actions/setup-node" = 5
+"actions/setup-python" = 6
+"actions/cache" = 5
+"actions/upload-artifact" = 5
+"actions/download-artifact" = 5

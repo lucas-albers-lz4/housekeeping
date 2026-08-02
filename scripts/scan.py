@@ -38,6 +38,23 @@ DEPENDABOT_ECOSYSTEM_RE = re.compile(
     r"package-ecosystem:\s*[\"']?([a-zA-Z0-9_-]+)[\"']?"
 )
 
+# Workflow `uses:` pins — capture action@ref (skip local ./ and docker://).
+USES_ACTION_RE = re.compile(
+    r"(?m)^\s*(?:-\s*)?uses:\s*[\"']?([^\"'\s#]+)[\"']?"
+)
+
+# First-party actions whose older majors still declare a Node 20 action runtime.
+# Bump majors to clear GitHub's "Node.js 20 is deprecated … forced to Node.js 24"
+# warning (job node-version / setup-python version is unrelated).
+DEFAULT_NODE20_ACTION_MIN_MAJORS: dict[str, int] = {
+    "actions/checkout": 5,
+    "actions/setup-node": 5,
+    "actions/setup-python": 6,
+    "actions/cache": 5,
+    "actions/upload-artifact": 5,
+    "actions/download-artifact": 5,
+}
+
 
 def load_config(path: Path) -> dict:
     with path.open("rb") as f:
@@ -191,6 +208,75 @@ def _dependabot_ecosystems(yml_text: str | None) -> set[str]:
     return set(DEPENDABOT_ECOSYSTEM_RE.findall(yml_text))
 
 
+def _action_major(ref: str) -> int | None:
+    """Parse major from refs like v4, v4.2.2, 5, 5.0.0. None if unparseable."""
+    ref = (ref or "").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", ref.lower()):
+        return None
+    m = re.match(r"^v?(\d+)(?:\.|$)", ref, re.I)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _load_node20_min_majors(cfg: dict | None) -> dict[str, int]:
+    raw = (cfg or {}).get("node20_action_min_majors")
+    if not isinstance(raw, dict) or not raw:
+        return dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
+    out = dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
+    for k, v in raw.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _scan_node20_action_pins(
+    owner: str,
+    repo: str,
+    workflow_paths: list[str],
+    min_majors: dict[str, int],
+) -> list[dict]:
+    """Return [{action, ref, major, need, workflow}, ...] for Node-20-runtime pins."""
+    hits: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for wf in workflow_paths:
+        text = _fetch_file_text(owner, repo, wf)
+        if not text:
+            continue
+        for raw in USES_ACTION_RE.findall(text):
+            pin = raw.strip()
+            if pin.startswith("./") or pin.startswith("docker://"):
+                continue
+            if "@" not in pin:
+                continue
+            action, _, ref = pin.partition("@")
+            action = action.strip()
+            ref = ref.strip()
+            need = min_majors.get(action)
+            if need is None:
+                continue
+            major = _action_major(ref)
+            if major is None or major >= need:
+                continue
+            key = (action, ref, wf)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(
+                {
+                    "action": action,
+                    "ref": ref,
+                    "major": major,
+                    "need": need,
+                    "workflow": wf,
+                }
+            )
+    hits.sort(key=lambda h: (h["action"], h["workflow"], h["ref"]))
+    return hits
+
+
 def _finding(
     fid: str,
     severity: str,
@@ -210,10 +296,13 @@ def scan_repo_hygiene(
     repo: str,
     list_meta: dict | None = None,
     active_forks: set[str] | None = None,
+    node20_min_majors: dict[str, int] | None = None,
+    skip_workflow_pins: bool = False,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
     active_forks = active_forks or set()
+    node20_min_majors = node20_min_majors or dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
     meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
     if meta is None:
         return {
@@ -269,7 +358,12 @@ def scan_repo_hygiene(
 
     paths = _repo_tree_paths(owner, repo, branch) or []
     detected = _detect_ecosystems(paths)
-    has_workflows = any(p.startswith(".github/workflows/") and p.endswith((".yml", ".yaml")) for p in paths)
+    workflow_paths = [
+        p
+        for p in paths
+        if p.startswith(".github/workflows/") and p.endswith((".yml", ".yaml"))
+    ]
+    has_workflows = bool(workflow_paths)
     has_dependabot_yml = any(
         p in (".github/dependabot.yml", ".github/dependabot.yaml") for p in paths
     )
@@ -484,6 +578,31 @@ def scan_repo_hygiene(
                 )
             )
 
+    node20_action_pins: list[dict] = []
+    if has_workflows and not skip_workflow_pins:
+        node20_action_pins = _scan_node20_action_pins(
+            owner, repo, workflow_paths, node20_min_majors
+        )
+        if node20_action_pins:
+            # Unique action@ref for the message (workflows listed in structured field).
+            uniq: list[str] = []
+            seen_ar: set[str] = set()
+            for h in node20_action_pins:
+                label = f"{h['action']}@{h['ref']} (need v{h['need']}+)"
+                if label not in seen_ar:
+                    seen_ar.add(label)
+                    uniq.append(label)
+            findings.append(
+                _finding(
+                    "node20_action_runtime",
+                    "medium",
+                    park_size,
+                    "Node 20 action runtime pins: "
+                    + ", ".join(uniq)
+                    + " — bump majors before Node 20 removal (not job node-version)",
+                )
+            )
+
     if is_fork and not is_active_fork:
         for f in findings:
             f["size"] = "park"
@@ -514,6 +633,7 @@ def scan_repo_hygiene(
         "has_workflows": has_workflows,
         "detected_ecosystems": sorted(detected),
         "dependabot_ecosystems": sorted(configured_ecosystems),
+        "node20_action_pins": node20_action_pins,
         "findings": findings,
         "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
     }
@@ -985,15 +1105,27 @@ def main() -> int:
         help="Skip repo hygiene / automation config audit",
     )
     ap.add_argument(
+        "--skip-workflow-pins",
+        action="store_true",
+        help="Skip Node 20 action-runtime pin checks (faster hygiene)",
+    )
+    ap.add_argument(
         "--repos",
         help="Comma-separated repo names to scan (default: all owned)",
     )
     args = ap.parse_args()
 
     cfg = load_config(args.config) if args.config.exists() else {}
-    owner = args.owner or cfg.get("owner") or "lucas-albers-lz4"
+    owner = args.owner or cfg.get("owner")
+    if not owner:
+        print(
+            "error: set owner in config.toml (see config.example.toml) or pass --owner",
+            file=sys.stderr,
+        )
+        return 2
     gitroot = expand(args.gitroot or cfg.get("gitroot") or "~/gitroot")
     out_dir = expand(str(ROOT / (cfg.get("out_dir") or "out")))
+    node20_mins = _load_node20_min_majors(cfg)
 
     repos = list_repos(owner)
     if args.repos:
@@ -1031,6 +1163,8 @@ def main() -> int:
                     name,
                     r,
                     active_forks=set(cfg.get("active_forks") or []),
+                    node20_min_majors=node20_mins,
+                    skip_workflow_pins=args.skip_workflow_pins,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):
