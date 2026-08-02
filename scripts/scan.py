@@ -55,6 +55,28 @@ DEFAULT_NODE20_ACTION_MIN_MAJORS: dict[str, int] = {
     "actions/download-artifact": 5,
 }
 
+# Branch cleanup defaults (suggest-only; never auto-delete in scan).
+DEFAULT_BRANCH_CLEANUP: dict = {
+    "enabled": True,
+    "merged_retention_days": 30,
+    "max_merged_prs": 100,
+    "max_list": 15,
+    "protected_names": [
+        "main",
+        "master",
+        "develop",
+        "dev",
+        "staging",
+        "production",
+        "gh-pages",
+    ],
+    "protected_prefixes": [
+        "release/",
+        "dependabot/",
+        "renovate/",
+    ],
+}
+
 
 def load_config(path: Path) -> dict:
     with path.open("rb") as f:
@@ -277,6 +299,143 @@ def _scan_node20_action_pins(
     return hits
 
 
+def _load_branch_cleanup_cfg(cfg: dict | None) -> dict:
+    raw = (cfg or {}).get("branch_cleanup")
+    out = dict(DEFAULT_BRANCH_CLEANUP)
+    if not isinstance(raw, dict):
+        return out
+    if "enabled" in raw:
+        out["enabled"] = bool(raw["enabled"])
+    for key in ("merged_retention_days", "max_merged_prs", "max_list"):
+        if key in raw:
+            try:
+                out[key] = int(raw[key])
+            except (TypeError, ValueError):
+                pass
+    if isinstance(raw.get("protected_names"), list):
+        out["protected_names"] = [str(x) for x in raw["protected_names"]]
+    if isinstance(raw.get("protected_prefixes"), list):
+        out["protected_prefixes"] = [str(x) for x in raw["protected_prefixes"]]
+    return out
+
+
+def _branch_is_protected(name: str, cleanup_cfg: dict) -> bool:
+    if name in set(cleanup_cfg.get("protected_names") or []):
+        return True
+    for pref in cleanup_cfg.get("protected_prefixes") or []:
+        if name.startswith(pref):
+            return True
+    return False
+
+
+def _remote_branch_exists(owner: str, repo: str, name: str) -> bool:
+    """True if refs/heads/<name> exists (name may contain '/')."""
+    p = run_gh(["api", f"repos/{owner}/{repo}/git/ref/heads/{name}"])
+    return p.returncode == 0
+
+
+def _scan_stale_merged_branches(
+    owner: str,
+    repo: str,
+    default_branch: str,
+    cleanup_cfg: dict,
+) -> list[dict]:
+    """Suggest-only: remote heads of merged PRs past retention, still present.
+
+    Cautious filters — never includes default/protected branches, heads/bases of
+    open PRs, or branches without a merged PR. Scan does not delete anything.
+    """
+    if not cleanup_cfg.get("enabled", True):
+        return []
+
+    retention = int(cleanup_cfg.get("merged_retention_days") or 30)
+    max_prs = int(cleanup_cfg.get("max_merged_prs") or 100)
+    max_list = int(cleanup_cfg.get("max_list") or 15)
+
+    cutoff = datetime.now(timezone.utc).timestamp() - retention * 86400
+
+    merged, err = gh_json(
+        [
+            "pr",
+            "list",
+            "--repo",
+            f"{owner}/{repo}",
+            "--state",
+            "merged",
+            "--limit",
+            str(max_prs),
+            "--json",
+            "number,headRefName,mergedAt",
+        ]
+    )
+    if err or not isinstance(merged, list):
+        return []
+
+    open_prs, _oerr = gh_json(
+        [
+            "pr",
+            "list",
+            "--repo",
+            f"{owner}/{repo}",
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            "headRefName,baseRefName",
+        ]
+    )
+    in_use: set[str] = set()
+    if isinstance(open_prs, list):
+        for pr in open_prs:
+            if pr.get("headRefName"):
+                in_use.add(pr["headRefName"])
+            if pr.get("baseRefName"):
+                in_use.add(pr["baseRefName"])
+
+    # Prefer the oldest eligible merged PR per branch name, then verify remote.
+    candidates: dict[str, dict] = {}
+    for pr in merged:
+        name = (pr.get("headRefName") or "").strip()
+        merged_at = pr.get("mergedAt") or ""
+        if not name or not merged_at:
+            continue
+        if name == default_branch or _branch_is_protected(name, cleanup_cfg):
+            continue
+        if name in in_use:
+            continue
+        try:
+            ts = datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if ts > cutoff:
+            continue
+        prev = candidates.get(name)
+        if prev is None or ts < prev["_ts"]:
+            candidates[name] = {
+                "name": name,
+                "pr": pr.get("number"),
+                "merged_at": merged_at,
+                "_ts": ts,
+            }
+
+    rows = sorted(candidates.values(), key=lambda x: x["_ts"])
+    out: list[dict] = []
+    for row in rows:
+        if len(out) >= max_list:
+            break
+        if not _remote_branch_exists(owner, repo, row["name"]):
+            continue
+        out.append(
+            {
+                "name": row["name"],
+                "pr": row["pr"],
+                "merged_at": row["merged_at"],
+            }
+        )
+    return out
+
+
 def _finding(
     fid: str,
     severity: str,
@@ -298,11 +457,18 @@ def scan_repo_hygiene(
     active_forks: set[str] | None = None,
     node20_min_majors: dict[str, int] | None = None,
     skip_workflow_pins: bool = False,
+    branch_cleanup_cfg: dict | None = None,
+    skip_branch_cleanup: bool = False,
+    pipeline_repos: set[str] | None = None,
+    parked_repos: set[str] | None = None,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
     active_forks = active_forks or set()
     node20_min_majors = node20_min_majors or dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
+    branch_cleanup_cfg = branch_cleanup_cfg or dict(DEFAULT_BRANCH_CLEANUP)
+    pipeline_repos = pipeline_repos or set()
+    parked_repos = parked_repos or set()
     meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
     if meta is None:
         return {
@@ -603,6 +769,36 @@ def scan_repo_hygiene(
                 )
             )
 
+    # Suggest-only branch cleanup: owned + active forks; never pipeline/parked.
+    stale_merged_branches: list[dict] = []
+    run_branch_cleanup = (
+        not skip_branch_cleanup
+        and branch_cleanup_cfg.get("enabled", True)
+        and repo not in parked_repos
+        and repo not in pipeline_repos
+        and (not is_fork or is_active_fork)
+    )
+    if run_branch_cleanup:
+        stale_merged_branches = _scan_stale_merged_branches(
+            owner, repo, branch, branch_cleanup_cfg
+        )
+        if stale_merged_branches:
+            days = int(branch_cleanup_cfg.get("merged_retention_days") or 30)
+            parts = [
+                f"{b['name']} (merged PR #{b['pr']} @ {b['merged_at'][:10]})"
+                for b in stale_merged_branches
+            ]
+            findings.append(
+                _finding(
+                    "stale_merged_branches",
+                    "low",
+                    "suggest",
+                    f"Stale merged branches (>{days}d, still on remote; suggest-only — "
+                    f"confirm before delete): "
+                    + "; ".join(parts),
+                )
+            )
+
     if is_fork and not is_active_fork:
         for f in findings:
             f["size"] = "park"
@@ -634,6 +830,7 @@ def scan_repo_hygiene(
         "detected_ecosystems": sorted(detected),
         "dependabot_ecosystems": sorted(configured_ecosystems),
         "node20_action_pins": node20_action_pins,
+        "stale_merged_branches": stale_merged_branches,
         "findings": findings,
         "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
     }
@@ -1110,6 +1307,11 @@ def main() -> int:
         help="Skip Node 20 action-runtime pin checks (faster hygiene)",
     )
     ap.add_argument(
+        "--skip-branch-cleanup",
+        action="store_true",
+        help="Skip suggest-only stale merged-branch checks",
+    )
+    ap.add_argument(
         "--repos",
         help="Comma-separated repo names to scan (default: all owned)",
     )
@@ -1126,6 +1328,10 @@ def main() -> int:
     gitroot = expand(args.gitroot or cfg.get("gitroot") or "~/gitroot")
     out_dir = expand(str(ROOT / (cfg.get("out_dir") or "out")))
     node20_mins = _load_node20_min_majors(cfg)
+    branch_cleanup = _load_branch_cleanup_cfg(cfg)
+    pipeline_repos = set(cfg.get("pipeline_repos") or [])
+    parked_repos = set(cfg.get("parked_repos") or [])
+    active_forks = set(cfg.get("active_forks") or [])
 
     repos = list_repos(owner)
     if args.repos:
@@ -1162,9 +1368,13 @@ def main() -> int:
                     owner,
                     name,
                     r,
-                    active_forks=set(cfg.get("active_forks") or []),
+                    active_forks=active_forks,
                     node20_min_majors=node20_mins,
                     skip_workflow_pins=args.skip_workflow_pins,
+                    branch_cleanup_cfg=branch_cleanup,
+                    skip_branch_cleanup=args.skip_branch_cleanup,
+                    pipeline_repos=pipeline_repos,
+                    parked_repos=parked_repos,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):

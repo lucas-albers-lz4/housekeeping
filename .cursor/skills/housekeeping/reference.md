@@ -51,6 +51,15 @@ Node 24). Fix by bumping `uses:` majors in a PR — **not** by changing job
 `[node20_action_min_majors]` in `config.toml`. Skip with
 `python3 scripts/scan.py --skip-workflow-pins`.
 
+Finding `stale_merged_branches` (low, **suggest-only**): remote heads of PRs
+merged more than `merged_retention_days` ago (default 30) that still exist.
+Filters out default branch, `protected_names` / `protected_prefixes`, and any
+branch that is head or base of an open PR. Skipped for `pipeline_repos`,
+`parked_repos`, and non-`active_forks`. Config: `[branch_cleanup]`. Skip with
+`--skip-branch-cleanup`. **Never delete** these branches unless the user
+explicitly asks after reviewing the list (prefer enabling “auto-delete head
+branches” for the future via `delete_branch_on_merge_off`).
+
 Private repos without GHAS: the scanner records `secret_scanning` /
 `push_protection` as `unavailable_private` and does **not** emit
 `secret_scanning_off` / `push_protection_off`. Dependabot security updates are
@@ -67,7 +76,8 @@ workflow when lockfiles exist (`templates/dependency-review.yml`).
 
 Forks and archived repos score `park` — **except** forks listed in
 `config.toml` `active_forks`, which triage as **Active fork — fix** (same
-Dependabot/settings bar as owned repos).
+Dependabot/settings bar as owned repos). Stale-branch suggestions on active
+forks still use the **suggest_only** verdict.
 
 Archived repos: hygiene findings, open PRs/issues, and security alerts are
 **parked** (not suggested as `batch-pr` / fix-direct). The scanner still lists
@@ -104,6 +114,11 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
   Cilium networking review, QEMU smoke re-enable)
 - Keep discussion on the GitHub issue; PR references the issue
 
+### suggest (human confirm)
+
+- `stale_merged_branches`: show the candidate list; delete only after explicit
+  user approval (one repo / named branches). Do not bulk-delete across the owner.
+
 ### park
 
 - Archived repos (open Dependabot PRs, leftover issues — skip, do not batch-merge)
@@ -132,8 +147,9 @@ When producing a visual board, use a Cursor canvas in this workspace:
 - Separate sections: hygiene by **verdict** (exclusions first), quick wins,
   Dependabot piles, PRs, issues, pipeline, dirty locals.
 - Hygiene finding counts must be sorted/grouped via
-  `scripts/hygiene_verdicts.py` (park archived → park fork → fork consider →
-  tier2 skip → pipeline skip → ship only) so exclusions are obvious.
+  `scripts/hygiene_verdicts.py` (park archived → park fork → parked_repos →
+  tier2 skip → pipeline skip → suggest_only → ship only → active_fork) so
+  exclusions are obvious.
 - Link to GitHub URLs; do not dump huge alert tables (summarize by repo + severity).
 - Hygiene ≠ alert debt — keep a dedicated “Hygiene gaps” / verdict table.
 

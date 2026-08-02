@@ -45,6 +45,28 @@ parked_repos = [
   "at-3099246",
 ]
 
+# Suggest-only stale merged-branch cleanup (scan never deletes).
+# Skipped automatically for pipeline_repos, parked_repos, non-active forks.
+[branch_cleanup]
+enabled = true
+merged_retention_days = 30
+max_merged_prs = 100
+max_list = 15
+protected_names = [
+  "main",
+  "master",
+  "develop",
+  "dev",
+  "staging",
+  "production",
+  "gh-pages",
+]
+protected_prefixes = [
+  "release/",
+  "dependabot/",
+  "renovate/",
+]
+
 # Min major for first-party actions still on the Node 20 *action runtime*
 # below these versions (GitHub forces Node 24; bump majors to clear CI warnings).
 # Job `node-version:` / setup-python version are unrelated.

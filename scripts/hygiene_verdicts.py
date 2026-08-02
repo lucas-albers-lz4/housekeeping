@@ -21,6 +21,7 @@ VERDICT_ORDER = [
     "park_repo",
     "tier2_skip",
     "pipeline_skip",
+    "suggest_only",
     "ship_only",
     "active_fork",
 ]
@@ -50,6 +51,10 @@ VERDICT_META = {
         "label": "Pipeline — leave alone",
         "reason": "Pipeline repos (config pipeline_repos): skip optional CodeQL noise.",
     },
+    "suggest_only": {
+        "label": "Suggest only — human confirm",
+        "reason": "Destructive/ambiguous cleanup (stale merged branches). List for human; never auto-delete.",
+    },
     "ship_only": {
         "label": "Only if shipping",
         "reason": "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — fix only if you ship them.",
@@ -57,6 +62,7 @@ VERDICT_META = {
 }
 
 TIER2_FINDING_IDS = {"dependency_review_missing"}
+SUGGEST_ONLY_FINDING_IDS = {"stale_merged_branches"}
 
 
 def _load_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -98,6 +104,9 @@ def classify_finding(
         return "park_archived"
     if repo in parked:
         return "park_repo"
+    # Branch cleanup etc. — always suggest-only (even on active forks).
+    if fid in SUGGEST_ONLY_FINDING_IDS:
+        return "suggest_only"
     if repo_row.get("fork"):
         if repo in active:
             return "active_fork"
