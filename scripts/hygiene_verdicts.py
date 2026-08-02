@@ -18,6 +18,7 @@ DEFAULT_CONFIG = ROOT / "config.toml"
 VERDICT_ORDER = [
     "park_archived",
     "park_fork",
+    "park_repo",
     "tier2_skip",
     "pipeline_skip",
     "ship_only",
@@ -32,6 +33,10 @@ VERDICT_META = {
     "park_fork": {
         "label": "Park — fork noise",
         "reason": "Fork gaps; park unless listed in config active_forks.",
+    },
+    "park_repo": {
+        "label": "Park — config parked_repos",
+        "reason": "Explicitly parked owned repos (class/experiment clones).",
     },
     "active_fork": {
         "label": "Active fork — fix",
@@ -70,21 +75,29 @@ def load_pipeline_repos(config_path: Path | None = None) -> set[str]:
     return set(_load_config(config_path).get("pipeline_repos") or [])
 
 
+def load_parked_repos(config_path: Path | None = None) -> set[str]:
+    return set(_load_config(config_path).get("parked_repos") or [])
+
+
 def classify_finding(
     repo_row: dict[str, Any],
     finding: dict[str, Any],
     active_forks: set[str] | None = None,
     pipeline_repos: set[str] | None = None,
+    parked_repos: set[str] | None = None,
 ) -> str:
     """Return a VERDICT_ORDER key for one finding on one repo."""
     active = active_forks if active_forks is not None else load_active_forks()
     pipelines = (
         pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     )
+    parked = parked_repos if parked_repos is not None else load_parked_repos()
     fid = finding.get("id") or ""
     repo = repo_row.get("repo") or ""
     if fid == "archived" or repo_row.get("archived"):
         return "park_archived"
+    if repo in parked:
+        return "park_repo"
     if repo_row.get("fork"):
         if repo in active:
             return "active_fork"
@@ -100,16 +113,18 @@ def group_hygiene_findings(
     hygiene: list[dict[str, Any]],
     active_forks: set[str] | None = None,
     pipeline_repos: set[str] | None = None,
+    parked_repos: set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Map verdict → list of {repo, finding_id, severity, size, private, fork}."""
     active = active_forks if active_forks is not None else load_active_forks()
     pipelines = (
         pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     )
+    parked = parked_repos if parked_repos is not None else load_parked_repos()
     grouped: dict[str, list[dict[str, Any]]] = {k: [] for k in VERDICT_ORDER}
     for h in hygiene:
         for f in h.get("findings") or []:
-            verdict = classify_finding(h, f, active, pipelines)
+            verdict = classify_finding(h, f, active, pipelines, parked)
             grouped.setdefault(verdict, []).append(
                 {
                     "repo": h.get("repo"),

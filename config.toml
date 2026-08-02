@@ -40,6 +40,11 @@ active_forks = [
   "easy-aws-login",
 ]
 
+# Owned repos to park (class/experiment clones, not active debt).
+parked_repos = [
+  "at-3099246",
+]
+
 # Min major for first-party actions still on the Node 20 *action runtime*
 # below these versions (GitHub forces Node 24; bump majors to clear CI warnings).
 # Job `node-version:` / setup-python version are unrelated.
