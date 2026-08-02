@@ -338,7 +338,8 @@ def _open_pr_branch_names(owner: str, repo: str) -> set[str] | None:
     """Head + base ref names for all open PRs. None = fail closed (API error)."""
     names: set[str] = set()
     page = 1
-    while page <= 50:
+    max_pages = 50
+    while page <= max_pages:
         p = run_gh(
             [
                 "api",
@@ -366,8 +367,61 @@ def _open_pr_branch_names(owner: str, repo: str) -> set[str] | None:
                 names.add(base)
         if len(batch) < 100:
             break
+        # Full page at the page cap → inventory incomplete; fail closed.
+        if page == max_pages:
+            return None
         page += 1
     return names
+
+
+def _latest_merge_for_branch(
+    owner: str, repo: str, branch: str
+) -> dict | None | bool:
+    """Latest merged PR for a head branch.
+
+    Returns:
+      dict with name/pr/merged_at/_ts — latest merge found
+      None — no merged PR for this head
+      False — API failure (caller must not suggest)
+    """
+    # head filter is owner:ref for same-repo (and most fork) PRs.
+    p = run_gh(
+        [
+            "api",
+            f"repos/{owner}/{repo}/pulls"
+            f"?state=closed&head={owner}:{branch}&per_page=30",
+        ]
+    )
+    if p.returncode != 0:
+        return False
+    if not p.stdout.strip():
+        return None
+    try:
+        batch = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(batch, list):
+        return False
+    best: dict | None = None
+    for pr in batch:
+        merged_at = pr.get("merged_at") or ""
+        if not merged_at:
+            continue
+        head = ((pr.get("head") or {}).get("ref") or "").strip()
+        if head != branch:
+            continue
+        try:
+            ts = datetime.fromisoformat(merged_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if best is None or ts > best["_ts"]:
+            best = {
+                "name": branch,
+                "pr": pr.get("number"),
+                "merged_at": merged_at,
+                "_ts": ts,
+            }
+    return best
 
 
 def _scan_stale_merged_branches(
@@ -380,8 +434,9 @@ def _scan_stale_merged_branches(
 
     Cautious filters — never includes default/protected branches, heads/bases of
     open PRs, or branches without a merged PR. Uses the *latest* merge per
-    branch name so a recent re-merge keeps the branch out of the list.
-    Fail closed if open PRs cannot be listed. Scan does not delete anything.
+    branch (verified via head filter, not only the merged-PR sample) so a
+    recent re-merge keeps the branch out of the list. Fail closed if open PRs
+    cannot be fully listed. Scan does not delete anything.
     """
     if not cleanup_cfg.get("enabled", True):
         return []
@@ -414,7 +469,7 @@ def _scan_stale_merged_branches(
     if in_use is None:
         return []
 
-    # Latest merge per headRefName (re-use within retention must not look stale).
+    # Seed candidates from the merged-PR sample (latest in-sample per name).
     latest: dict[str, dict] = {}
     for pr in merged:
         name = (pr.get("headRefName") or "").strip()
@@ -438,19 +493,32 @@ def _scan_stale_merged_branches(
                 "_ts": ts,
             }
 
-    candidates = [row for row in latest.values() if row["_ts"] <= cutoff]
-    rows = sorted(candidates, key=lambda x: x["_ts"])
+    # Rough pre-filter, then verify true latest merge per head (sample order
+    # is by createdAt, so re-merges can sit outside max_merged_prs).
+    seed = [row for row in latest.values() if row["_ts"] <= cutoff]
+    seed.sort(key=lambda x: x["_ts"])
+
     out: list[dict] = []
-    for row in rows:
+    for row in seed:
         if len(out) >= max_list:
             break
-        if not _remote_branch_exists(owner, repo, row["name"]):
+        verified = _latest_merge_for_branch(owner, repo, row["name"])
+        if verified is False:
+            # Fail closed for this branch — do not suggest.
+            continue
+        if verified is None:
+            continue
+        if verified["_ts"] > cutoff:
+            continue
+        if verified["name"] in in_use:
+            continue
+        if not _remote_branch_exists(owner, repo, verified["name"]):
             continue
         out.append(
             {
-                "name": row["name"],
-                "pr": row["pr"],
-                "merged_at": row["merged_at"],
+                "name": verified["name"],
+                "pr": verified["pr"],
+                "merged_at": verified["merged_at"],
             }
         )
     return out
