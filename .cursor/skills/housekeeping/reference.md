@@ -60,6 +60,15 @@ branch that is head or base of an open PR. Skipped for `pipeline_repos`,
 explicitly asks after reviewing the list (prefer enabling “auto-delete head
 branches” for the future via `delete_branch_on_merge_off`).
 
+Finding `readme_badges_thin` / `about_metadata_thin` (low, **suggest-only**):
+README badge gaps (CI / license when applicable) and thin GitHub About
+metadata (missing description and/or topics). Inspired by common shields.io +
+Actions badge rows — detection only; scan never edits READMEs or repo
+settings. Package-registry badges are **not** required (manifests ≠ published
+packages). Skipped for `pipeline_repos`, `parked_repos`, non-`active_forks`,
+and repos without code. Config: `[readme_polish]`. Skip with
+`--skip-readme-polish`.
+
 Private repos without GHAS: the scanner records `secret_scanning` /
 `push_protection` as `unavailable_private` and does **not** emit
 `secret_scanning_off` / `push_protection_off`. Dependabot security updates are
@@ -118,6 +127,9 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
 
 - `stale_merged_branches`: show the candidate list; delete only after explicit
   user approval (one repo / named branches). Do not bulk-delete across the owner.
+- `readme_badges_thin` / `about_metadata_thin`: note badge or About gaps; human
+  decides whether to add shields/Actions badges or set description/topics.
+  Do not auto-PR README/About changes from housekeeping.
 
 ### park
 

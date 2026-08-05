@@ -16,6 +16,8 @@ Follow [`AGENTS.md`](AGENTS.md) for all cross-repo hygiene rules (including
   bump Node-20-runtime action majors when `node20_action_runtime` fires.
 - `stale_merged_branches` is suggest-only — never delete remotes without an
   explicit user ask (`--skip-branch-cleanup` to omit the check).
+- `readme_badges_thin` / `about_metadata_thin` are suggest-only — list gaps;
+  do not auto-edit READMEs or About (`--skip-readme-polish` to omit).
 - Forks listed in `config.toml` `active_forks` are maintained — fix them; other
   forks default to park.
 - Archived repos: park PRs/issues/alerts — do not treat as cleanup debt.
@@ -27,6 +29,7 @@ python3 scripts/scan.py
 python3 scripts/triage_queue.py
 python3 scripts/scan.py --repos fwlive,irr --skip-local
 python3 scripts/scan.py --skip-branch-cleanup
+python3 scripts/scan.py --skip-readme-polish
 ```
 
 Skill details: `.cursor/skills/housekeeping/SKILL.md` and `reference.md`.

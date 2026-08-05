@@ -53,7 +53,10 @@ VERDICT_META = {
     },
     "suggest_only": {
         "label": "Suggest only — human confirm",
-        "reason": "Destructive/ambiguous cleanup (stale merged branches). List for human; never auto-delete.",
+        "reason": (
+            "Polish or destructive/ambiguous cleanup (README badges, About "
+            "metadata, stale merged branches). List for human; never auto-apply."
+        ),
     },
     "ship_only": {
         "label": "Only if shipping",
@@ -62,7 +65,11 @@ VERDICT_META = {
 }
 
 TIER2_FINDING_IDS = {"dependency_review_missing"}
-SUGGEST_ONLY_FINDING_IDS = {"stale_merged_branches"}
+SUGGEST_ONLY_FINDING_IDS = {
+    "stale_merged_branches",
+    "readme_badges_thin",
+    "about_metadata_thin",
+}
 
 
 def _load_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -104,7 +111,7 @@ def classify_finding(
         return "park_archived"
     if repo in parked:
         return "park_repo"
-    # Branch cleanup etc. — always suggest-only (even on active forks).
+    # README/About polish + branch cleanup — always suggest-only (even on active forks).
     if fid in SUGGEST_ONLY_FINDING_IDS:
         return "suggest_only"
     if repo_row.get("fork"):

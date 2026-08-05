@@ -47,6 +47,7 @@ python3 scripts/scan.py --skip-alerts   # PRs/issues/local (+ hygiene) only
 python3 scripts/scan.py --skip-hygiene  # skip config/automation audit
 python3 scripts/scan.py --skip-workflow-pins  # skip Node 20 action-runtime pin fetch
 python3 scripts/scan.py --skip-branch-cleanup  # skip suggest-only stale branch check
+python3 scripts/scan.py --skip-readme-polish  # skip suggest-only README/About polish
 python3 scripts/scan.py --skip-local
 ```
 
@@ -61,7 +62,7 @@ Requires authenticated `gh` with access to the owner’s repos (including privat
 | `issue-pr` | Real design/bug work | Issue → PR → review |
 | `pipeline` | Agent workflow queue (labels) | Leave alone unless user asks |
 | `never-merge` | e.g. `miner-eval` | Do not merge |
-| `suggest` | Destructive/ambiguous (stale merged branches) | List only; delete only if user explicitly asks |
+| `suggest` | Ambiguous polish or destructive (README badges, About, stale merged branches) | List only; act only if user explicitly asks |
 | `park` | Fork noise / archived / low-value / deferred | Skip |
 
 **Repo hygiene** findings (`repo_hygiene` in the report) are missing automation
