@@ -93,6 +93,7 @@ _SHIELDS_URL_RE = re.compile(r"https?://img\.shields\.io/[^\s\)\"'<>]+", re.I)
 _ACTIONS_BADGE_RE = re.compile(
     r"https?://github\.com/[^\s\)\"'<>]+/badge\.svg[^\s\)\"'<>]*", re.I
 )
+_RST_IMAGE_RE = re.compile(r"\.\.\s+image::\s+(\S+)", re.I)
 
 README_CANDIDATES = (
     "README.md",
@@ -391,11 +392,27 @@ def _readme_badge_blobs(text: str) -> list[str]:
         alt = m.group(1) or m.group(4) or ""
         src = m.group(2) or m.group(3) or ""
         blobs.append(f"{alt} {src}".lower())
+    for m in _RST_IMAGE_RE.finditer(text):
+        blobs.append(m.group(1).lower())
     for m in _SHIELDS_URL_RE.finditer(text):
         blobs.append(m.group(0).lower())
     for m in _ACTIONS_BADGE_RE.finditer(text):
         blobs.append(m.group(0).lower())
     return blobs
+
+
+def _blob_is_license_badge(blob: str) -> bool:
+    """True if blob looks like a license badge (not a workflow named license-*)."""
+    # Actions workflow status badges are CI, even if the workflow file mentions license.
+    if "actions/workflows/" in blob:
+        return False
+    if "badge/license" in blob:
+        return True
+    if "img.shields.io" in blob and re.search(r"\blicense\b", blob):
+        return True
+    # Markdown/HTML alt text precedes the URL.
+    alt = blob.split("http", 1)[0]
+    return bool(re.search(r"\blicense\b", alt))
 
 
 def _badge_categories_present(blobs: list[str]) -> set[str]:
@@ -408,7 +425,7 @@ def _badge_categories_present(blobs: list[str]) -> set[str]:
             or "actions/workflows" in blob
         ):
             found.add("ci")
-        if "license" in blob:
+        if _blob_is_license_badge(blob):
             found.add("license")
         if (
             "pypi.org" in blob
