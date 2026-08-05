@@ -77,6 +77,32 @@ DEFAULT_BRANCH_CLEANUP: dict = {
     ],
 }
 
+# README badges + GitHub About metadata (suggest-only polish).
+DEFAULT_README_POLISH: dict = {
+    "enabled": True,
+}
+
+# Markdown / HTML badge image markup in READMEs.
+_MD_BADGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_HTML_IMG_RE = re.compile(
+    r"<img\b[^>]*(?:alt\s*=\s*[\"']([^\"']*)[\"'][^>]*src\s*=\s*[\"']([^\"']+)[\"']"
+    r"|src\s*=\s*[\"']([^\"']+)[\"'][^>]*alt\s*=\s*[\"']([^\"']*)[\"'])[^>]*>",
+    re.I,
+)
+_SHIELDS_URL_RE = re.compile(r"https?://img\.shields\.io/[^\s\)\"'<>]+", re.I)
+_ACTIONS_BADGE_RE = re.compile(
+    r"https?://github\.com/[^\s\)\"'<>]+/badge\.svg[^\s\)\"'<>]*", re.I
+)
+
+README_CANDIDATES = (
+    "README.md",
+    "README.rst",
+    "README",
+    "README.txt",
+    "Readme.md",
+    "readme.md",
+)
+
 
 def load_config(path: Path) -> dict:
     with path.open("rb") as f:
@@ -319,6 +345,115 @@ def _load_branch_cleanup_cfg(cfg: dict | None) -> dict:
     return out
 
 
+def _load_readme_polish_cfg(cfg: dict | None) -> dict:
+    raw = (cfg or {}).get("readme_polish")
+    out = dict(DEFAULT_README_POLISH)
+    if not isinstance(raw, dict):
+        return out
+    if "enabled" in raw:
+        out["enabled"] = bool(raw["enabled"])
+    return out
+
+
+def _readme_path(paths: list[str]) -> str | None:
+    """First root-level README candidate present in the tree."""
+    path_set = set(paths)
+    for name in README_CANDIDATES:
+        if name in path_set:
+            return name
+    # Case-insensitive fallback for odd casings at repo root.
+    lower_map = {p.lower(): p for p in paths if "/" not in p}
+    for name in README_CANDIDATES:
+        hit = lower_map.get(name.lower())
+        if hit:
+            return hit
+    return None
+
+
+def _has_license_file(paths: list[str]) -> bool:
+    for p in paths:
+        if "/" in p:
+            continue
+        base = p.upper()
+        if base == "LICENSE" or base.startswith("LICENSE.") or base == "COPYING":
+            return True
+        if base.startswith("COPYING."):
+            return True
+    return False
+
+
+def _readme_badge_blobs(text: str) -> list[str]:
+    """Lowercased alt+url blobs for badge-like images in README text."""
+    blobs: list[str] = []
+    for m in _MD_BADGE_RE.finditer(text):
+        blobs.append(f"{m.group(1)} {m.group(2)}".lower())
+    for m in _HTML_IMG_RE.finditer(text):
+        alt = m.group(1) or m.group(4) or ""
+        src = m.group(2) or m.group(3) or ""
+        blobs.append(f"{alt} {src}".lower())
+    for m in _SHIELDS_URL_RE.finditer(text):
+        blobs.append(m.group(0).lower())
+    for m in _ACTIONS_BADGE_RE.finditer(text):
+        blobs.append(m.group(0).lower())
+    return blobs
+
+
+def _badge_categories_present(blobs: list[str]) -> set[str]:
+    """Heuristic categories covered by README badge markup."""
+    found: set[str] = set()
+    for blob in blobs:
+        if (
+            "/badge.svg" in blob
+            or re.search(r"\b(tests?|ci|build|workflow)\b", blob)
+            or "actions/workflows" in blob
+        ):
+            found.add("ci")
+        if "license" in blob:
+            found.add("license")
+        if (
+            "pypi.org" in blob
+            or "pypi/" in blob
+            or "npmjs.com" in blob
+            or "/npm/" in blob
+            or "crates.io" in blob
+            or "crates/" in blob
+            or "badge/pypi" in blob
+        ):
+            found.add("package")
+    return found
+
+
+def _missing_readme_badge_categories(
+    blobs: list[str],
+    *,
+    has_workflows: bool,
+    has_license: bool,
+) -> list[str]:
+    """Applicable badge categories not present in README.
+
+    Package-registry badges (PyPI/npm/crates) are intentionally not required:
+    local manifests often do not mean a published package of the same name.
+    """
+    present = _badge_categories_present(blobs)
+    missing: list[str] = []
+    if has_workflows and "ci" not in present:
+        missing.append("ci")
+    if has_license and "license" not in present:
+        missing.append("license")
+    return missing
+
+
+def _repo_topics(owner: str, repo: str, meta: dict) -> list[str]:
+    """Topic names for a repo (dedicated topics endpoint, then meta fallback)."""
+    data, _err = gh_api_object(f"repos/{owner}/{repo}/topics")
+    if isinstance(data, dict) and isinstance(data.get("names"), list):
+        return [str(x) for x in data["names"] if x]
+    topics = meta.get("topics")
+    if isinstance(topics, list):
+        return [str(x) for x in topics if x]
+    return []
+
+
 def _branch_is_protected(name: str, cleanup_cfg: dict) -> bool:
     if name in set(cleanup_cfg.get("protected_names") or []):
         return True
@@ -547,6 +682,8 @@ def scan_repo_hygiene(
     skip_workflow_pins: bool = False,
     branch_cleanup_cfg: dict | None = None,
     skip_branch_cleanup: bool = False,
+    readme_polish_cfg: dict | None = None,
+    skip_readme_polish: bool = False,
     pipeline_repos: set[str] | None = None,
     parked_repos: set[str] | None = None,
 ) -> dict:
@@ -555,6 +692,7 @@ def scan_repo_hygiene(
     active_forks = active_forks or set()
     node20_min_majors = node20_min_majors or dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
     branch_cleanup_cfg = branch_cleanup_cfg or dict(DEFAULT_BRANCH_CLEANUP)
+    readme_polish_cfg = readme_polish_cfg or dict(DEFAULT_README_POLISH)
     pipeline_repos = pipeline_repos or set()
     parked_repos = parked_repos or set()
     meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
@@ -887,6 +1025,59 @@ def scan_repo_hygiene(
                 )
             )
 
+    # Suggest-only README badges + About metadata polish.
+    readme_path: str | None = None
+    readme_missing_badges: list[str] = []
+    about_gaps: list[str] = []
+    run_readme_polish = (
+        not skip_readme_polish
+        and readme_polish_cfg.get("enabled", True)
+        and has_code
+        and repo not in parked_repos
+        and repo not in pipeline_repos
+        and (not is_fork or is_active_fork)
+    )
+    if run_readme_polish:
+        readme_path = _readme_path(paths)
+        if readme_path:
+            readme_text = _fetch_file_text(owner, repo, readme_path)
+            if readme_text is not None:
+                blobs = _readme_badge_blobs(readme_text)
+                readme_missing_badges = _missing_readme_badge_categories(
+                    blobs,
+                    has_workflows=has_workflows,
+                    has_license=_has_license_file(paths),
+                )
+                if readme_missing_badges:
+                    findings.append(
+                        _finding(
+                            "readme_badges_thin",
+                            "low",
+                            "suggest",
+                            "README badge gaps (suggest-only): missing "
+                            + ", ".join(readme_missing_badges)
+                            + " — add shields/Actions badges when useful",
+                        )
+                    )
+
+        desc = (meta.get("description") or "").strip()
+        topics = _repo_topics(owner, repo, meta)
+        if not desc:
+            about_gaps.append("description")
+        if not topics:
+            about_gaps.append("topics")
+        if about_gaps:
+            findings.append(
+                _finding(
+                    "about_metadata_thin",
+                    "low",
+                    "suggest",
+                    "GitHub About gaps (suggest-only): missing "
+                    + ", ".join(about_gaps)
+                    + " — set repo description and topics in Settings → General",
+                )
+            )
+
     if is_fork and not is_active_fork:
         for f in findings:
             f["size"] = "park"
@@ -919,6 +1110,9 @@ def scan_repo_hygiene(
         "dependabot_ecosystems": sorted(configured_ecosystems),
         "node20_action_pins": node20_action_pins,
         "stale_merged_branches": stale_merged_branches,
+        "readme_path": readme_path,
+        "readme_missing_badges": readme_missing_badges,
+        "about_gaps": about_gaps,
         "findings": findings,
         "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
     }
@@ -1400,6 +1594,11 @@ def main() -> int:
         help="Skip suggest-only stale merged-branch checks",
     )
     ap.add_argument(
+        "--skip-readme-polish",
+        action="store_true",
+        help="Skip suggest-only README badge / About metadata checks",
+    )
+    ap.add_argument(
         "--repos",
         help="Comma-separated repo names to scan (default: all owned)",
     )
@@ -1417,6 +1616,7 @@ def main() -> int:
     out_dir = expand(str(ROOT / (cfg.get("out_dir") or "out")))
     node20_mins = _load_node20_min_majors(cfg)
     branch_cleanup = _load_branch_cleanup_cfg(cfg)
+    readme_polish = _load_readme_polish_cfg(cfg)
     pipeline_repos = set(cfg.get("pipeline_repos") or [])
     parked_repos = set(cfg.get("parked_repos") or [])
     active_forks = set(cfg.get("active_forks") or [])
@@ -1461,6 +1661,8 @@ def main() -> int:
                     skip_workflow_pins=args.skip_workflow_pins,
                     branch_cleanup_cfg=branch_cleanup,
                     skip_branch_cleanup=args.skip_branch_cleanup,
+                    readme_polish_cfg=readme_polish,
+                    skip_readme_polish=args.skip_readme_polish,
                     pipeline_repos=pipeline_repos,
                     parked_repos=parked_repos,
                 )

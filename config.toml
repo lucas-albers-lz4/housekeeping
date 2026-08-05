@@ -67,6 +67,11 @@ protected_prefixes = [
   "renovate/",
 ]
 
+# Suggest-only README badges + GitHub About (description/topics).
+# Scan never edits READMEs or settings. Skip with --skip-readme-polish.
+[readme_polish]
+enabled = true
+
 # Min major for first-party actions still on the Node 20 *action runtime*
 # below these versions (GitHub forces Node 24; bump majors to clear CI warnings).
 # Job `node-version:` / setup-python version are unrelated.
