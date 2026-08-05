@@ -1,5 +1,7 @@
 # housekeeping
 
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Cross-repo GitHub hygiene toolkit: scan Dependabot / code scanning / secrets,
 **repo automation config** (Dependabot.yml, secret scanning, CodeQL, Node 20
 action-runtime pins, etc.), open PRs & issues, and dirty trees under a local
