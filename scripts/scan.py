@@ -403,8 +403,8 @@ def _readme_badge_blobs(text: str) -> list[str]:
 
 def _blob_is_license_badge(blob: str) -> bool:
     """True if blob looks like a license badge (not a workflow named license-*)."""
-    # Actions workflow status badges are CI, even if the workflow file mentions license.
-    if "actions/workflows/" in blob:
+    # Actions / workflow status badges are CI, even if the workflow name mentions license.
+    if "actions/workflows/" in blob or "github/actions/workflow" in blob:
         return False
     if "badge/license" in blob:
         return True
