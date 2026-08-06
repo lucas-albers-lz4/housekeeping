@@ -58,7 +58,7 @@ branch that is head or base of an open PR. Skipped for `pipeline_repos`,
 `parked_repos`, and non-`active_forks`. Config: `[branch_cleanup]`. Skip with
 `--skip-branch-cleanup`. **Never delete** these branches unless the user
 explicitly asks after reviewing the list (prefer enabling “auto-delete head
-branches” for the future via `delete_branch_on_merge_off`).
+branches” for the future — that clears the `delete_branch_on_merge_off` finding).
 
 Finding `readme_badges_thin` / `about_metadata_thin` (low, **suggest-only**):
 README badge gaps (CI / license when applicable) and thin GitHub About
@@ -92,9 +92,7 @@ Archived repos: hygiene findings, open PRs/issues, and security alerts are
 **parked** (not suggested as `batch-pr` / fix-direct). The scanner still lists
 open PRs/issues under an archived-park section so nothing is invisible.
 
-Current `active_forks`: cert-manager-webhook-duckdns, helm-whatup,
-docker-duckdns, jobs-filterer-for-linkedin, NorseWorld-Ragnarok,
-easy-aws-login.
+Current `active_forks` is defined in `config.toml` (the authoritative list).
 
 ## Size playbook
 
