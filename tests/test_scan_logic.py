@@ -19,7 +19,6 @@ sys.path.insert(0, str(SCRIPTS))
 import scan  # noqa: E402
 from hygiene_verdicts import classify_finding  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # _detect_ecosystems
 # ---------------------------------------------------------------------------
@@ -224,7 +223,11 @@ updates:
 
 
 def test_classify_item():
-    cfg = {"pipeline_repos": ["pipe-repo"], "pipeline_labels": ["pipeline"], "never_merge_labels": ["miner-eval"]}
+    cfg = {
+        "pipeline_repos": ["pipe-repo"],
+        "pipeline_labels": ["pipeline"],
+        "never_merge_labels": ["miner-eval"],
+    }
     assert scan.classify_item("any", ["miner-eval"], cfg) == "never-merge"
     assert scan.classify_item("pipe-repo", ["pipeline"], cfg) == "pipeline"
     assert scan.classify_item("other", ["pipeline"], cfg) == "pipeline"  # label anywhere
@@ -261,6 +264,4 @@ def test_classify_finding_verdicts():
         classify_finding(cfg_repo, {"id": "code_scanning_not_configured"}, pipeline_repos={"x"})
         == "pipeline_skip"
     )
-    assert (
-        classify_finding(cfg_repo, {"id": "x"}, parked_repos={"x"}) == "park_repo"
-    )
+    assert classify_finding(cfg_repo, {"id": "x"}, parked_repos={"x"}) == "park_repo"
