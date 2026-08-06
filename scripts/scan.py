@@ -703,6 +703,7 @@ def scan_repo_hygiene(
     skip_readme_polish: bool = False,
     pipeline_repos: set[str] | None = None,
     parked_repos: set[str] | None = None,
+    no_ci_repos: set[str] | None = None,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
@@ -712,6 +713,7 @@ def scan_repo_hygiene(
     readme_polish_cfg = readme_polish_cfg or dict(DEFAULT_README_POLISH)
     pipeline_repos = pipeline_repos or set()
     parked_repos = parked_repos or set()
+    no_ci_repos = no_ci_repos or set()
     meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
     if meta is None:
         return {
@@ -946,7 +948,14 @@ def scan_repo_hygiene(
         )
 
     code_scanning_ok = cs_state == "configured" or has_codeql_workflow or has_osv_workflow
-    if has_code and not code_scanning_ok:
+    # Private repos without GitHub Advanced Security cannot enable code scanning
+    # either (same GHAS gate as secret scanning / push protection).
+    code_scanning_unavailable_private = is_private and secret_scan != "enabled"
+    if code_scanning_unavailable_private:
+        code_scanning_report = "unavailable_private"
+    else:
+        code_scanning_report = cs_state
+    if has_code and not code_scanning_ok and not code_scanning_unavailable_private:
         findings.append(
             _finding(
                 "code_scanning_not_configured",
@@ -956,7 +965,7 @@ def scan_repo_hygiene(
             )
         )
 
-    if has_code and not has_workflows:
+    if has_code and not has_workflows and repo not in no_ci_repos:
         findings.append(
             _finding(
                 "missing_ci_workflow",
@@ -1118,7 +1127,7 @@ def scan_repo_hygiene(
         "dependabot_security_updates": dep_sec_report,
         "secret_scanning": secret_scan_report,
         "push_protection": push_prot_report,
-        "code_scanning_default_setup": cs_state,
+        "code_scanning_default_setup": code_scanning_report,
         "delete_branch_on_merge": delete_branch,
         "has_dependabot_yml": has_dependabot_yml,
         "has_renovate": has_renovate,
@@ -1637,6 +1646,7 @@ def main() -> int:
     pipeline_repos = set(cfg.get("pipeline_repos") or [])
     parked_repos = set(cfg.get("parked_repos") or [])
     active_forks = set(cfg.get("active_forks") or [])
+    no_ci_repos = set(cfg.get("no_ci_repos") or [])
 
     repos = list_repos(owner)
     if args.repos:
@@ -1682,6 +1692,7 @@ def main() -> int:
                     skip_readme_polish=args.skip_readme_polish,
                     pipeline_repos=pipeline_repos,
                     parked_repos=parked_repos,
+                    no_ci_repos=no_ci_repos,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):

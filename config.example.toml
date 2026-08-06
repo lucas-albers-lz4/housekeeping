@@ -27,6 +27,10 @@ active_forks = []
 # Owned repos to park (class/experiment clones, not active debt).
 parked_repos = []
 
+# Repos that intentionally have no CI (ship nothing / no released artifacts).
+# Skips the `missing_ci_workflow` finding. Dependabot/security settings still apply.
+no_ci_repos = []
+
 # Suggest-only stale merged-branch cleanup (scan never deletes).
 # Skipped automatically for pipeline_repos, parked_repos, non-active forks.
 [branch_cleanup]

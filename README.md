@@ -59,6 +59,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `gitroot` | Local checkouts root |
 | `pipeline_repos` / `pipeline_labels` | Leave labeled workflow queue alone |
 | `active_forks` | Forks you maintain (not parked) |
+| `no_ci_repos` | Repos that ship nothing — skip the `missing_ci_workflow` finding |
 | `never_merge_labels` | e.g. `miner-eval` |
 | `node20_action_min_majors` | Min majors for Node-24-capable first-party actions |
 
