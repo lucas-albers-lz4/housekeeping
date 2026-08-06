@@ -41,6 +41,10 @@ that adds files from `templates/`.
 | Secret scanning | Enabled on **public** repos (private needs GitHub Advanced Security) |
 | Push protection | Enabled on **public** repos (same GHAS limit for private) |
 | Code scanning | Default setup `configured` **or** CodeQL/osv workflow. Private repos without GHAS are recorded `unavailable_private` and not flagged (same gate as secret scanning) |
+| Branch protection | Default branch protected **or** repo rulesets present (required reviews / status checks). Only checked on owned non-fork repos with code |
+| Workflow permissions | Actions default = `read` (least privilege). `write` default is flagged on repos with code |
+| Secret scanning extras | GHAS repos: validity checks + non-provider patterns should be enabled (low) |
+| SECURITY.md | Required only for repos in `config.toml` `security_repos` (disclosure policy) |
 | CI | At least one workflow when the repo has code, **unless** the repo is in `config.toml` `no_ci_repos` (ships nothing) |
 | Node 20 action runtime | First-party JS actions on Node-24 majors (`checkout`/`setup-node` **v5+**, `setup-python` **v6+**, etc.) |
 

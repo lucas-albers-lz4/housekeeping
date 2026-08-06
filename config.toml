@@ -51,6 +51,13 @@ no_ci_repos = [
   "housekeeping",
 ]
 
+# Security-sensitive repos that must have a SECURITY.md disclosure policy.
+# The scan emits `missing_security_policy` when one of these lacks it.
+security_repos = [
+  "usrmanage",
+  "fwlive",
+]
+
 # Suggest-only stale merged-branch cleanup (scan never deletes).
 # Skipped automatically for pipeline_repos, parked_repos, non-active forks.
 [branch_cleanup]

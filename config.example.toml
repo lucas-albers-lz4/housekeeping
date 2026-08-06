@@ -31,6 +31,10 @@ parked_repos = []
 # Skips the `missing_ci_workflow` finding. Dependabot/security settings still apply.
 no_ci_repos = []
 
+# Security-sensitive repos that must have a SECURITY.md disclosure policy.
+# The scan emits `missing_security_policy` when one of these lacks it.
+security_repos = []
+
 # Suggest-only stale merged-branch cleanup (scan never deletes).
 # Skipped automatically for pipeline_repos, parked_repos, non-active forks.
 [branch_cleanup]
