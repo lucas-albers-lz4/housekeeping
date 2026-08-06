@@ -60,6 +60,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `pipeline_repos` / `pipeline_labels` | Leave labeled workflow queue alone |
 | `active_forks` | Forks you maintain (not parked) |
 | `no_ci_repos` | Repos that ship nothing — skip the `missing_ci_workflow` finding |
+| `security_repos` | Repos that must have a `SECURITY.md` — emits `missing_security_policy` when absent |
 | `never_merge_labels` | e.g. `miner-eval` |
 | `node20_action_min_majors` | Min majors for Node-24-capable first-party actions |
 

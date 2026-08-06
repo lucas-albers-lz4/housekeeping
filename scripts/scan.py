@@ -473,6 +473,28 @@ def _repo_topics(owner: str, repo: str, meta: dict) -> list[str]:
     return []
 
 
+def _default_branch_protection(owner: str, repo: str, branch: str) -> dict | None:
+    """Branch protection object for the default branch, or None if unprotected/404."""
+    data, _err = gh_api_object(f"repos/{owner}/{repo}/branches/{branch}/protection")
+    return data
+
+
+def _repo_rulesets(owner: str, repo: str) -> list | None:
+    """Repo-level rulesets (list) or None on API failure (fail closed to 'unknown')."""
+    data, err = gh_api(f"repos/{owner}/{repo}/rulesets")
+    if err or data is None:
+        return None
+    return data
+
+
+def _actions_workflow_permissions(owner: str, repo: str) -> str | None:
+    """Default workflow permissions: 'read' | 'write' | None (API error/legacy)."""
+    data, _err = gh_api_object(f"repos/{owner}/{repo}/actions/permissions")
+    if not data:
+        return None
+    return data.get("default_workflow_permissions")
+
+
 def _branch_is_protected(name: str, cleanup_cfg: dict) -> bool:
     if name in set(cleanup_cfg.get("protected_names") or []):
         return True
@@ -700,6 +722,7 @@ def scan_repo_hygiene(
     pipeline_repos: set[str] | None = None,
     parked_repos: set[str] | None = None,
     no_ci_repos: set[str] | None = None,
+    security_repos: set[str] | None = None,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
@@ -710,6 +733,7 @@ def scan_repo_hygiene(
     pipeline_repos = pipeline_repos or set()
     parked_repos = parked_repos or set()
     no_ci_repos = no_ci_repos or set()
+    security_repos = security_repos or set()
     meta, meta_err = gh_api_object(f"repos/{owner}/{repo}")
     if meta is None:
         return {
@@ -959,6 +983,73 @@ def scan_repo_hygiene(
             )
         )
 
+    # --- Protection & advanced security (owned non-fork repos with code) ---
+    branch_protection: dict | None = None
+    rulesets: list | None = None
+    wf_perms: str | None = None
+    if has_code and not is_fork and not is_archived:
+        branch_protection = _default_branch_protection(owner, repo, branch)
+        rulesets = _repo_rulesets(owner, repo)
+        if rulesets is None and branch_protection is None:
+            # Fail closed: both unknown → report nothing rather than a false "unprotected".
+            pass
+        elif branch_protection is None and not rulesets:
+            findings.append(
+                _finding(
+                    "branch_unprotected",
+                    "medium",
+                    "fix-direct",
+                    "Default branch has no branch protection and no rulesets — "
+                    "consider required reviews + status checks",
+                )
+            )
+        wf_perms = _actions_workflow_permissions(owner, repo)
+        if wf_perms == "write":
+            findings.append(
+                _finding(
+                    "workflow_permissions_write",
+                    "medium",
+                    "fix-direct",
+                    "Actions default workflow permissions are 'write' — "
+                    "set to 'read' + explicit permissions: blocks (least privilege)",
+                )
+            )
+
+    # GHAS sub-features: only meaningful when secret scanning is actually enabled.
+    if not secret_scanning_unavailable_private and secret_scan == "enabled":
+        validity = sa_status(sa, "secret_scanning_validity_checks")
+        if validity != "enabled":
+            findings.append(
+                _finding(
+                    "secret_validity_checks_off",
+                    "low",
+                    park_size,
+                    "Secret scanning validity checks disabled — enabled on GHAS repos",
+                )
+            )
+        non_provider = sa_status(sa, "secret_scanning_non_provider_patterns")
+        if non_provider != "enabled":
+            findings.append(
+                _finding(
+                    "secret_nonprovider_patterns_off",
+                    "low",
+                    park_size,
+                    "Secret scanning non-provider patterns disabled — enabled on GHAS repos",
+                )
+            )
+
+    # SECURITY.md disclosure policy — only for repos explicitly listed in config.
+    if repo in security_repos and not any(p.lower() == "security.md" for p in paths):
+        findings.append(
+            _finding(
+                "missing_security_policy",
+                "medium",
+                "fix-direct",
+                "Repo listed in security_repos but has no SECURITY.md — "
+                "add a disclosure policy so GitHub surfaces a report channel",
+            )
+        )
+
     # Tier 2 (low): only for non-fork active repos
     if not is_fork:
         if not delete_branch:
@@ -1109,6 +1200,9 @@ def scan_repo_hygiene(
         "secret_scanning": secret_scan_report,
         "push_protection": push_prot_report,
         "code_scanning_default_setup": code_scanning_report,
+        "branch_protection": None if rulesets is None else branch_protection is not None,
+        "rulesets": bool(rulesets) if rulesets is not None else None,
+        "workflow_permissions": wf_perms,
         "delete_branch_on_merge": delete_branch,
         "has_dependabot_yml": has_dependabot_yml,
         "has_renovate": has_renovate,
@@ -1598,6 +1692,7 @@ def main() -> int:
     parked_repos = set(cfg.get("parked_repos") or [])
     active_forks = set(cfg.get("active_forks") or [])
     no_ci_repos = set(cfg.get("no_ci_repos") or [])
+    security_repos = set(cfg.get("security_repos") or [])
 
     repos = list_repos(owner)
     if args.repos:
@@ -1644,6 +1739,7 @@ def main() -> int:
                     pipeline_repos=pipeline_repos,
                     parked_repos=parked_repos,
                     no_ci_repos=no_ci_repos,
+                    security_repos=security_repos,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):
