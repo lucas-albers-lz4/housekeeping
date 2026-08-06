@@ -85,6 +85,11 @@ protected_prefixes = [
 [readme_polish]
 enabled = true
 
+# Solo-owner: do not require/suggest approving reviews (self-approve forbidden).
+# Set true only when a second reviewer is intentional.
+[branch_protection]
+require_approving_reviews = false
+
 # Min major for first-party actions still on the Node 20 *action runtime*
 # below these versions (GitHub forces Node 24; bump majors to clear CI warnings).
 # Job `node-version:` / setup-python version are unrelated.

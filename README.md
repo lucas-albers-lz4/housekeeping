@@ -63,6 +63,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `security_repos` | Repos that must have a `SECURITY.md` — emits `missing_security_policy` when absent |
 | `never_merge_labels` | e.g. `miner-eval` |
 | `node20_action_min_majors` | Min majors for Node-24-capable first-party actions |
+| `[branch_protection] require_approving_reviews` | Suggest/require PR reviews (default `false` for solo owners) |
 
 ## Project skill
 

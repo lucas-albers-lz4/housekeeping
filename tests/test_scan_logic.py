@@ -318,3 +318,77 @@ def test_ghas_findings_suggest_on_user_account(monkeypatch):
     assert ghas_org
     for f in ghas_org:
         assert f["size"] == "fix-direct"
+
+
+def test_branch_protection_require_reviews_config(monkeypatch):
+    """Solo default: flag required reviews; team mode: suggest reviews when unprotected."""
+    from scan import scan_repo_hygiene
+
+    protected_with_reviews = {
+        "required_pull_request_reviews": {"required_approving_review_count": 1},
+        "enforce_admins": {"enabled": False},
+    }
+
+    def fake_meta(path):
+        if path.endswith("/code-scanning/default-setup"):
+            return {"state": "configured"}, None
+        if path.startswith("repos/"):
+            return {
+                "fork": False,
+                "archived": False,
+                "private": False,
+                "default_branch": "main",
+                "security_and_analysis": {
+                    "secret_scanning": {"status": "enabled"},
+                    "secret_scanning_push_protection": {"status": "enabled"},
+                },
+            }, None
+        return None, "disabled_or_unavailable"
+
+    monkeypatch.setattr(scan, "gh_api_object", fake_meta)
+    monkeypatch.setattr(scan, "gh_api", lambda *a, **k: ([], None))
+    monkeypatch.setattr(scan, "gh_api_status", lambda *a, **k: 204)
+    monkeypatch.setattr(scan, "_repo_tree_paths", lambda *a, **k: ["go.mod"])
+    monkeypatch.setattr(scan, "_detect_ecosystems", lambda p: {"gomod"})
+    monkeypatch.setattr(scan, "_repo_rulesets", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "_actions_workflow_permissions", lambda *a, **k: None)
+
+    monkeypatch.setattr(
+        scan, "_default_branch_protection", lambda *a, **k: protected_with_reviews
+    )
+    row = scan_repo_hygiene(
+        "owner",
+        "repo",
+        branch_protection_cfg={"require_approving_reviews": False},
+    )
+    ids = {f["id"] for f in row["findings"]}
+    assert "branch_requires_reviews" in ids
+    assert "branch_unprotected" not in ids
+
+    row_team = scan_repo_hygiene(
+        "owner",
+        "repo",
+        branch_protection_cfg={"require_approving_reviews": True},
+    )
+    assert "branch_requires_reviews" not in {f["id"] for f in row_team["findings"]}
+
+    monkeypatch.setattr(scan, "_default_branch_protection", lambda *a, **k: None)
+    row_solo_unprot = scan_repo_hygiene(
+        "owner",
+        "repo",
+        branch_protection_cfg={"require_approving_reviews": False},
+    )
+    unprot = [f for f in row_solo_unprot["findings"] if f["id"] == "branch_unprotected"]
+    assert unprot
+    assert "Do not require approving reviews" in unprot[0]["message"]
+    assert "required reviews + status checks" not in unprot[0]["message"]
+
+    row_team_unprot = scan_repo_hygiene(
+        "owner",
+        "repo",
+        branch_protection_cfg={"require_approving_reviews": True},
+    )
+    unprot_team = [f for f in row_team_unprot["findings"] if f["id"] == "branch_unprotected"]
+    assert unprot_team
+    assert "required reviews + status checks" in unprot_team[0]["message"]
+
