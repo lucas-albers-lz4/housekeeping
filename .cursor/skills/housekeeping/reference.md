@@ -140,6 +140,57 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
 - Optional-later design issues already marked deferred
 - Upstream/vendor checkouts under `gitroot` that you do not own
 
+## Batch-applying settings (guardrails)
+
+When the user approves batch-applying repo settings (branch protection,
+Dependabot toggles, secret scanning), these guardrails prevent the two real
+failure modes seen in practice: **locking the solo owner out of their own
+repos**, and **bricking merges with un-runnable required checks**.
+
+### Branch protection on a single-owner repo
+
+- **`enforce_admins: false`** — with `true`, required reviews apply to the
+  owner too, and a solo owner has nobody to approve their own PRs → **the
+  owner can no longer merge anything**. Admin bypass is the point for
+  single-owner repos. Protection still governs future collaborators.
+- **Do NOT require status checks that don't run on PRs.** A check that only
+  fires on `push` to main or on tags (release/publish workflows) never reports
+  on a PR, so a required check name that never runs **blocks every merge
+  forever**. Only require checks verified to run on `pull_request` events
+  (query `check-runs` on a recent PR head, not just the workflow list).
+- Safe baseline for solo repos: `required_approving_review_count: 1` +
+  `dismiss_stale_reviews: true` + `enforce_admins: false`, no required status
+  checks until CI-on-PR is confirmed.
+- Private repos without GitHub Pro: the branch-protection and rulesets APIs
+  return **403** (`Upgrade to GitHub Pro or make this repository public`).
+  Report `branch_protection: null` (unknown) and do **not** emit a finding —
+  the scanner already does this via the `rulesets is None` fail-closed path.
+
+### GHAS sub-features are UI-only on User accounts
+
+`secret_scanning_validity_checks` and `secret_scanning_non_provider_patterns`
+are **NOT settable via REST for a personal User account** (the account type of
+most `owner` values here). The only writable endpoints in the current OpenAPI
+spec are org/enterprise **code security configurations**
+(`/orgs/{org}/code-security/configurations/...`), which do not exist for a
+User. The old repo-level `PATCH /repos/{o}/{r}/security-and-analysis` is gone
+from the spec.
+
+- On a User account these toggles are **one UI click per repo**
+  (Settings → Code security), not a scriptable one-liner.
+- The scanner reflects this: `owner_is_user_account()` downgrades the two GHAS
+  findings to `suggest` with a UI pointer. Do not try to "fix" them via API —
+  it will 404.
+- On an org owner they stay `fix-direct` (settable via code security configs).
+
+### Verification after applying
+
+- Re-query each setting after the write (`gh api … --jq` on the field you
+  changed, or `-i` for a 204/404 status check) — a PUT that exits 0 is not
+  proof the setting took.
+- Re-run the scan on the touched repos and confirm the expected findings
+  cleared (and none appeared).
+
 ## Known gotchas
 
 - `gh api …/secret-scanning/alerts` returns 404 when disabled — scripts treat

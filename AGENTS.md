@@ -46,6 +46,12 @@ tool.
    from `stale_merged_branches` / suggest-only findings without an explicit ask.
    `readme_badges_thin` / `about_metadata_thin` are also suggest-only (no auto
    README/About edits).
+10. **Settings changes need explicit approval + verification.** Enabling repo
+    settings (branch protection, Dependabot, secret scanning) is a write
+    action — batch only after the user says so, and re-query each setting after
+    applying (a PUT returning 0 is not proof). See
+    `.cursor/skills/housekeeping/reference.md` → "Batch-applying settings" for
+    the guardrails that prevent solo-owner lockout and bricked merges.
 
 ## Commands
 
