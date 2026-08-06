@@ -60,7 +60,10 @@ VERDICT_META = {
     },
     "ship_only": {
         "label": "Only if shipping",
-        "reason": "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — fix only if you ship them.",
+        "reason": (
+            "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — "
+            "fix only if you ship them."
+        ),
     },
 }
 
@@ -152,8 +155,8 @@ def group_hygiene_findings(
                     "url": h.get("url"),
                 }
             )
-    for v in grouped:
-        grouped[v].sort(key=lambda x: (x.get("finding_id") or "", x.get("repo") or ""))
+    for v, items_v in grouped.items():
+        items_v.sort(key=lambda x: (x.get("finding_id") or "", x.get("repo") or ""))
     return grouped
 
 

@@ -10,13 +10,13 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import contextlib
 import json
-import os
 import re
 import subprocess
 import sys
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +25,8 @@ DEFAULT_CONFIG = ROOT / "config.toml"
 # Path patterns → Dependabot package-ecosystem ids.
 MANIFEST_ECOSYSTEMS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(^|/)go\.mod$"), "gomod"),
-    (re.compile(r"(^|/)package-lock\.json$|(^|/)package\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.yaml$"), "npm"),
-    (re.compile(r"(^|/)requirements[^/]*\.txt$|(^|/)Pipfile(\.lock)?$|(^|/)poetry\.lock$|(^|/)pyproject\.toml$"), "pip"),
+    (re.compile(r"(^|/)package-lock\.json$|(^|/)package\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.yaml$"), "npm"),  # noqa: E501
+    (re.compile(r"(^|/)requirements[^/]*\.txt$|(^|/)Pipfile(\.lock)?$|(^|/)poetry\.lock$|(^|/)pyproject\.toml$"), "pip"),  # noqa: E501
     (re.compile(r"(^|/)Cargo\.(toml|lock)$"), "cargo"),
     (re.compile(r"(^|/)Gemfile(\.lock)?$"), "bundler"),
     (re.compile(r"(^|/)composer\.(json|lock)$"), "composer"),
@@ -111,7 +111,7 @@ def load_config(path: Path) -> dict:
 
 
 def expand(p: str) -> Path:
-    return Path(os.path.expanduser(p)).resolve()
+    return Path(p).expanduser().resolve()
 
 
 def run_gh(args: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -296,7 +296,7 @@ def _scan_node20_action_pins(
             continue
         for raw in USES_ACTION_RE.findall(text):
             pin = raw.strip()
-            if pin.startswith("./") or pin.startswith("docker://"):
+            if pin.startswith(("./", "docker://")):
                 continue
             if "@" not in pin:
                 continue
@@ -335,10 +335,8 @@ def _load_branch_cleanup_cfg(cfg: dict | None) -> dict:
         out["enabled"] = bool(raw["enabled"])
     for key in ("merged_retention_days", "max_merged_prs", "max_list"):
         if key in raw:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 out[key] = int(raw[key])
-            except (TypeError, ValueError):
-                pass
     if isinstance(raw.get("protected_names"), list):
         out["protected_names"] = [str(x) for x in raw["protected_names"]]
     if isinstance(raw.get("protected_prefixes"), list):
@@ -474,10 +472,9 @@ def _repo_topics(owner: str, repo: str, meta: dict) -> list[str]:
 def _branch_is_protected(name: str, cleanup_cfg: dict) -> bool:
     if name in set(cleanup_cfg.get("protected_names") or []):
         return True
-    for pref in cleanup_cfg.get("protected_prefixes") or []:
-        if name.startswith(pref):
-            return True
-    return False
+    return any(
+        name.startswith(pref) for pref in (cleanup_cfg.get("protected_prefixes") or [])
+    )
 
 
 def _remote_branch_exists(owner: str, repo: str, name: str) -> bool:
@@ -597,7 +594,7 @@ def _scan_stale_merged_branches(
     max_prs = int(cleanup_cfg.get("max_merged_prs") or 100)
     max_list = int(cleanup_cfg.get("max_list") or 15)
 
-    cutoff = datetime.now(timezone.utc).timestamp() - retention * 86400
+    cutoff = datetime.now(UTC).timestamp() - retention * 86400
 
     merged, err = gh_json(
         [
@@ -810,7 +807,8 @@ def scan_repo_hygiene(
     )
     # Code-ish if we detected a language ecosystem (excluding actions-only empty repos).
     has_code = bool(detected - {"github-actions"}) or any(
-        p.endswith((".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java")) for p in paths[:5000]
+        p.endswith((".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java"))
+        for p in paths[:5000]
     )
 
     configured_ecosystems: set[str] = set()
@@ -950,11 +948,10 @@ def scan_repo_hygiene(
     code_scanning_ok = cs_state == "configured" or has_codeql_workflow or has_osv_workflow
     # Private repos without GitHub Advanced Security cannot enable code scanning
     # either (same GHAS gate as secret scanning / push protection).
-    code_scanning_unavailable_private = is_private and secret_scan != "enabled"
-    if code_scanning_unavailable_private:
-        code_scanning_report = "unavailable_private"
-    else:
-        code_scanning_report = cs_state
+    code_scanning_unavailable_private = secret_scanning_unavailable_private
+    code_scanning_report = (
+        "unavailable_private" if code_scanning_unavailable_private else cs_state
+    )
     if has_code and not code_scanning_ok and not code_scanning_unavailable_private:
         findings.append(
             _finding(
@@ -1258,7 +1255,7 @@ def scan_secrets(owner: str, repo: str) -> dict | None:
 
 
 def label_names(obj: dict) -> list[str]:
-    return [l.get("name") for l in (obj.get("labels") or []) if l.get("name")]
+    return [label.get("name") for label in (obj.get("labels") or []) if label.get("name")]
 
 
 def classify_item(
@@ -1716,7 +1713,7 @@ def main() -> int:
         )
 
     report = {
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": datetime.now(UTC).isoformat(),
         "owner": owner,
         "gitroot": str(gitroot),
         "repo_count": len(repos),
@@ -1737,7 +1734,7 @@ def main() -> int:
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = args.out or (out_dir / f"scan-{stamp}.json")
     out_path.write_text(json.dumps(report, indent=2) + "\n")
     # Also write latest symlink-style copy for agents
