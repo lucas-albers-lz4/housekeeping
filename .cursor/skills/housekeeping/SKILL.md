@@ -97,6 +97,15 @@ Details: [reference.md](reference.md).
   needed), then `move_agent_to_root` before edits.
 - For canvases: put triage boards under this project’s `canvases/` only when the
   workspace is `housekeeping`; embed scan data inline (no live fetch in canvas).
+- **Batch settings only with explicit user approval, then verify each write**
+  (re-query the setting after each write — a PUT exit 0 is not proof). On
+  **single-owner repos**, branch protection must use `enforce_admins: false`
+  (true locks the solo owner out of merges) and must **not** require status
+  checks that only run on push/tags (they never report on PRs → all merges
+  brick). GHAS sub-feature toggles (`secret_scanning_validity_checks`,
+  `secret_scanning_non_provider_patterns`) are **UI-only on User accounts** —
+  do not attempt via API. Full detail: `reference.md` → "Batch-applying
+  settings".
 
 ## Deliverable shape
 
