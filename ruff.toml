@@ -1,0 +1,40 @@
+# Ruff config for housekeeping (CLI hygiene scanner, not a library).
+# The scan/triage scripts are print-based CLI tools by design; several default
+# rules are noise here and are skipped deliberately (see ignore comments).
+
+line-length = 100
+target-version = "py311"
+
+[lint]
+# Curated rule set: high-signal categories only. Docstring (D), complexity
+# (C901/PLR091x), annotation (ANN), and bool-arg (FBT) pedantry is skipped —
+# these are small single-purpose scripts, not a library API.
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "SIM", # simplify
+    "PTH", # pathlib
+    "PIE", # misc
+    "PLC", # pylint convention
+]
+
+ignore = [
+    # T201 (print): these scripts PRINT the report — that is their job.
+    "T201",
+    # S105: false positive — `secret_scan` variables are config status strings,
+    # not passwords.
+    "S105",
+    # S603/S607: subprocess calls to `gh`/`git` are the tool's entire purpose.
+    # All args are argv lists (no shell=True, no string interpolation).
+    "S603",
+    "S607",
+    # PLW1510: returncode is inspected manually on every subprocess call.
+    "PLW1510",
+    # RUF001: triage_queue uses "×" deliberately in human-facing output.
+    "RUF001",
+    # INP001: scripts/ is a loose collection of entrypoints, not a package.
+    "INP001",
+]

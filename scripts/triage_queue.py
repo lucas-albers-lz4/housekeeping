@@ -79,9 +79,7 @@ def main() -> int:
             for i in items:
                 by_repo[i["repo"]].append(i)
             for repo in sorted(by_repo):
-                ids = ", ".join(
-                    f"{x['finding_id']}({x.get('severity')})" for x in by_repo[repo]
-                )
+                ids = ", ".join(f"{x['finding_id']}({x.get('severity')})" for x in by_repo[repo])
                 url = by_repo[repo][0].get("url") or ""
                 print(f"- [{key}] {repo}: {ids}")
                 if url:
@@ -92,9 +90,7 @@ def main() -> int:
     for d in report.get("dependabot") or []:
         if d["total"] <= 3:
             sev = d.get("by_severity") or {}
-            print(
-                f"- [fix-direct] {d['repo']}: Dependabot {d['total']} {sev} → {d['url']}"
-            )
+            print(f"- [fix-direct] {d['repo']}: Dependabot {d['total']} {sev} → {d['url']}")
     for c in report.get("code_scanning") or []:
         tools = c.get("by_tool") or {}
         if c["total"] <= 5 and "CodeQL" in tools:
@@ -104,8 +100,7 @@ def main() -> int:
             )
         elif c["total"] > 20:
             print(
-                f"- [park/batch] {c['repo']}: Code scanning {c['total']} "
-                f"tools={tools} → {c['url']}"
+                f"- [park/batch] {c['repo']}: Code scanning {c['total']} tools={tools} → {c['url']}"
             )
     for d in report.get("dependabot") or []:
         if d["total"] > 15:

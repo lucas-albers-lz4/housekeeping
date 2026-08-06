@@ -10,13 +10,13 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import contextlib
 import json
-import os
 import re
 import subprocess
 import sys
 import tomllib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +25,18 @@ DEFAULT_CONFIG = ROOT / "config.toml"
 # Path patterns → Dependabot package-ecosystem ids.
 MANIFEST_ECOSYSTEMS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(^|/)go\.mod$"), "gomod"),
-    (re.compile(r"(^|/)package-lock\.json$|(^|/)package\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.yaml$"), "npm"),
-    (re.compile(r"(^|/)requirements[^/]*\.txt$|(^|/)Pipfile(\.lock)?$|(^|/)poetry\.lock$|(^|/)pyproject\.toml$"), "pip"),
+    (
+        re.compile(
+            r"(^|/)package-lock\.json$|(^|/)package\.json$|(^|/)yarn\.lock$|(^|/)pnpm-lock\.yaml$"
+        ),
+        "npm",
+    ),  # noqa: E501
+    (
+        re.compile(
+            r"(^|/)requirements[^/]*\.txt$|(^|/)Pipfile(\.lock)?$|(^|/)poetry\.lock$|(^|/)pyproject\.toml$"
+        ),
+        "pip",
+    ),  # noqa: E501
     (re.compile(r"(^|/)Cargo\.(toml|lock)$"), "cargo"),
     (re.compile(r"(^|/)Gemfile(\.lock)?$"), "bundler"),
     (re.compile(r"(^|/)composer\.(json|lock)$"), "composer"),
@@ -34,14 +44,10 @@ MANIFEST_ECOSYSTEMS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(^|/)\.github/workflows/[^/]+\.ya?ml$"), "github-actions"),
 ]
 
-DEPENDABOT_ECOSYSTEM_RE = re.compile(
-    r"package-ecosystem:\s*[\"']?([a-zA-Z0-9_-]+)[\"']?"
-)
+DEPENDABOT_ECOSYSTEM_RE = re.compile(r"package-ecosystem:\s*[\"']?([a-zA-Z0-9_-]+)[\"']?")
 
 # Workflow `uses:` pins — capture action@ref (skip local ./ and docker://).
-USES_ACTION_RE = re.compile(
-    r"(?m)^\s*(?:-\s*)?uses:\s*[\"']?([^\"'\s#]+)[\"']?"
-)
+USES_ACTION_RE = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*[\"']?([^\"'\s#]+)[\"']?")
 
 # First-party actions whose older majors still declare a Node 20 action runtime.
 # Bump majors to clear GitHub's "Node.js 20 is deprecated … forced to Node.js 24"
@@ -90,9 +96,7 @@ _HTML_IMG_RE = re.compile(
     re.I,
 )
 _SHIELDS_URL_RE = re.compile(r"https?://img\.shields\.io/[^\s\)\"'<>]+", re.I)
-_ACTIONS_BADGE_RE = re.compile(
-    r"https?://github\.com/[^\s\)\"'<>]+/badge\.svg[^\s\)\"'<>]*", re.I
-)
+_ACTIONS_BADGE_RE = re.compile(r"https?://github\.com/[^\s\)\"'<>]+/badge\.svg[^\s\)\"'<>]*", re.I)
 _RST_IMAGE_RE = re.compile(r"\.\.\s+image::\s+(\S+)", re.I)
 
 README_CANDIDATES = (
@@ -111,7 +115,7 @@ def load_config(path: Path) -> dict:
 
 
 def expand(p: str) -> Path:
-    return Path(os.path.expanduser(p)).resolve()
+    return Path(p).expanduser().resolve()
 
 
 def run_gh(args: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -296,7 +300,7 @@ def _scan_node20_action_pins(
             continue
         for raw in USES_ACTION_RE.findall(text):
             pin = raw.strip()
-            if pin.startswith("./") or pin.startswith("docker://"):
+            if pin.startswith(("./", "docker://")):
                 continue
             if "@" not in pin:
                 continue
@@ -335,10 +339,8 @@ def _load_branch_cleanup_cfg(cfg: dict | None) -> dict:
         out["enabled"] = bool(raw["enabled"])
     for key in ("merged_retention_days", "max_merged_prs", "max_list"):
         if key in raw:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 out[key] = int(raw[key])
-            except (TypeError, ValueError):
-                pass
     if isinstance(raw.get("protected_names"), list):
         out["protected_names"] = [str(x) for x in raw["protected_names"]]
     if isinstance(raw.get("protected_prefixes"), list):
@@ -474,10 +476,7 @@ def _repo_topics(owner: str, repo: str, meta: dict) -> list[str]:
 def _branch_is_protected(name: str, cleanup_cfg: dict) -> bool:
     if name in set(cleanup_cfg.get("protected_names") or []):
         return True
-    for pref in cleanup_cfg.get("protected_prefixes") or []:
-        if name.startswith(pref):
-            return True
-    return False
+    return any(name.startswith(pref) for pref in (cleanup_cfg.get("protected_prefixes") or []))
 
 
 def _remote_branch_exists(owner: str, repo: str, name: str) -> bool:
@@ -526,9 +525,7 @@ def _open_pr_branch_names(owner: str, repo: str) -> set[str] | None:
     return names
 
 
-def _latest_merge_for_branch(
-    owner: str, repo: str, branch: str
-) -> dict | None | bool:
+def _latest_merge_for_branch(owner: str, repo: str, branch: str) -> dict | None | bool:
     """Latest merged PR for a head branch.
 
     Returns:
@@ -540,8 +537,7 @@ def _latest_merge_for_branch(
     p = run_gh(
         [
             "api",
-            f"repos/{owner}/{repo}/pulls"
-            f"?state=closed&head={owner}:{branch}&per_page=30",
+            f"repos/{owner}/{repo}/pulls?state=closed&head={owner}:{branch}&per_page=30",
         ]
     )
     if p.returncode != 0:
@@ -597,7 +593,7 @@ def _scan_stale_merged_branches(
     max_prs = int(cleanup_cfg.get("max_merged_prs") or 100)
     max_list = int(cleanup_cfg.get("max_list") or 15)
 
-    cutoff = datetime.now(timezone.utc).timestamp() - retention * 86400
+    cutoff = datetime.now(UTC).timestamp() - retention * 86400
 
     merged, err = gh_json(
         [
@@ -732,9 +728,7 @@ def scan_repo_hygiene(
 
     is_fork = bool(meta.get("fork") if meta.get("fork") is not None else list_meta.get("isFork"))
     is_archived = bool(
-        meta.get("archived")
-        if meta.get("archived") is not None
-        else list_meta.get("isArchived")
+        meta.get("archived") if meta.get("archived") is not None else list_meta.get("isArchived")
     )
     is_private = bool(meta.get("private"))
     branch = meta.get("default_branch") or _default_branch(list_meta)
@@ -770,9 +764,7 @@ def scan_repo_hygiene(
     paths = _repo_tree_paths(owner, repo, branch) or []
     detected = _detect_ecosystems(paths)
     workflow_paths = [
-        p
-        for p in paths
-        if p.startswith(".github/workflows/") and p.endswith((".yml", ".yaml"))
+        p for p in paths if p.startswith(".github/workflows/") and p.endswith((".yml", ".yaml"))
     ]
     has_workflows = bool(workflow_paths)
     has_dependabot_yml = any(
@@ -785,9 +777,7 @@ def scan_repo_hygiene(
     has_codeql_workflow = any(
         "codeql" in p.lower() and p.startswith(".github/workflows/") for p in paths
     )
-    has_osv_workflow = any(
-        "osv" in p.lower() and p.startswith(".github/workflows/") for p in paths
-    )
+    has_osv_workflow = any("osv" in p.lower() and p.startswith(".github/workflows/") for p in paths)
     has_dependency_review = any(
         "dependency-review" in p.lower() and p.startswith(".github/workflows/") for p in paths
     )
@@ -810,7 +800,8 @@ def scan_repo_hygiene(
     )
     # Code-ish if we detected a language ecosystem (excluding actions-only empty repos).
     has_code = bool(detected - {"github-actions"}) or any(
-        p.endswith((".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java")) for p in paths[:5000]
+        p.endswith((".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java"))
+        for p in paths[:5000]
     )
 
     configured_ecosystems: set[str] = set()
@@ -828,9 +819,7 @@ def scan_repo_hygiene(
     is_active_fork = is_fork and repo in active_forks
     # Active forks get fix-direct; other forks/archived stay park.
     park_size = (
-        "fix-direct"
-        if is_active_fork
-        else ("park" if is_fork or is_archived else "fix-direct")
+        "fix-direct" if is_active_fork else ("park" if is_fork or is_archived else "fix-direct")
     )
 
     if is_archived:
@@ -843,9 +832,7 @@ def scan_repo_hygiene(
             "default_branch": branch,
             "detected_ecosystems": sorted(detected),
             "dependabot_ecosystems": sorted(configured_ecosystems),
-            "findings": [
-                _finding("archived", "low", "park", "Archived — skip hygiene fixes")
-            ],
+            "findings": [_finding("archived", "low", "park", "Archived — skip hygiene fixes")],
             "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
         }
 
@@ -950,11 +937,8 @@ def scan_repo_hygiene(
     code_scanning_ok = cs_state == "configured" or has_codeql_workflow or has_osv_workflow
     # Private repos without GitHub Advanced Security cannot enable code scanning
     # either (same GHAS gate as secret scanning / push protection).
-    code_scanning_unavailable_private = is_private and secret_scan != "enabled"
-    if code_scanning_unavailable_private:
-        code_scanning_report = "unavailable_private"
-    else:
-        code_scanning_report = cs_state
+    code_scanning_unavailable_private = secret_scanning_unavailable_private
+    code_scanning_report = "unavailable_private" if code_scanning_unavailable_private else cs_state
     if has_code and not code_scanning_ok and not code_scanning_unavailable_private:
         findings.append(
             _finding(
@@ -1031,9 +1015,7 @@ def scan_repo_hygiene(
         and (not is_fork or is_active_fork)
     )
     if run_branch_cleanup:
-        stale_merged_branches = _scan_stale_merged_branches(
-            owner, repo, branch, branch_cleanup_cfg
-        )
+        stale_merged_branches = _scan_stale_merged_branches(owner, repo, branch, branch_cleanup_cfg)
         if stale_merged_branches:
             days = int(branch_cleanup_cfg.get("merged_retention_days") or 30)
             parts = [
@@ -1046,8 +1028,7 @@ def scan_repo_hygiene(
                     "low",
                     "suggest",
                     f"Stale merged branches (>{days}d, still on remote; suggest-only — "
-                    f"confirm before delete): "
-                    + "; ".join(parts),
+                    f"confirm before delete): " + "; ".join(parts),
                 )
             )
 
@@ -1168,9 +1149,7 @@ def scan_dependabot(owner: str, repo: str) -> dict | None:
                 "number": a.get("number"),
                 "severity": (a.get("security_vulnerability") or {}).get("severity"),
                 "package": ((a.get("dependency") or {}).get("package") or {}).get("name"),
-                "ecosystem": ((a.get("dependency") or {}).get("package") or {}).get(
-                    "ecosystem"
-                ),
+                "ecosystem": ((a.get("dependency") or {}).get("package") or {}).get("ecosystem"),
                 "advisory": (a.get("security_advisory") or {}).get("summary"),
                 "url": a.get("html_url"),
                 "manifest": (a.get("dependency") or {}).get("manifest_path"),
@@ -1187,9 +1166,7 @@ def scan_dependabot(owner: str, repo: str) -> dict | None:
 
 
 def scan_code_scanning(owner: str, repo: str) -> dict | None:
-    alerts, err = gh_api(
-        f"repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100"
-    )
+    alerts, err = gh_api(f"repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=100")
     if alerts is None:
         return None
     by = collections.Counter()
@@ -1229,9 +1206,7 @@ def scan_code_scanning(owner: str, repo: str) -> dict | None:
 
 
 def scan_secrets(owner: str, repo: str) -> dict | None:
-    alerts, err = gh_api(
-        f"repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100"
-    )
+    alerts, err = gh_api(f"repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100")
     if alerts is None:
         return None
     if not alerts:
@@ -1258,7 +1233,7 @@ def scan_secrets(owner: str, repo: str) -> dict | None:
 
 
 def label_names(obj: dict) -> list[str]:
-    return [l.get("name") for l in (obj.get("labels") or []) if l.get("name")]
+    return [label.get("name") for label in (obj.get("labels") or []) if label.get("name")]
 
 
 def classify_item(
@@ -1283,9 +1258,7 @@ def classify_item(
     return "human"
 
 
-def scan_prs(
-    owner: str, repo: str, cfg: dict, *, archived: bool = False
-) -> list[dict]:
+def scan_prs(owner: str, repo: str, cfg: dict, *, archived: bool = False) -> list[dict]:
     data, err = gh_json(
         [
             "pr",
@@ -1316,9 +1289,7 @@ def scan_prs(
                 "is_bot": author.startswith("app/") or "dependabot" in author,
                 "labels": labels,
                 "isDraft": pr.get("isDraft"),
-                "classification": classify_item(
-                    repo, labels, cfg, archived=archived
-                ),
+                "classification": classify_item(repo, labels, cfg, archived=archived),
                 "createdAt": pr.get("createdAt"),
                 "updatedAt": pr.get("updatedAt"),
             }
@@ -1326,9 +1297,7 @@ def scan_prs(
     return out
 
 
-def scan_issues(
-    owner: str, repo: str, cfg: dict, *, archived: bool = False
-) -> list[dict]:
+def scan_issues(owner: str, repo: str, cfg: dict, *, archived: bool = False) -> list[dict]:
     data, err = gh_json(
         [
             "issue",
@@ -1356,9 +1325,7 @@ def scan_issues(
                 "url": issue.get("url"),
                 "author": (issue.get("author") or {}).get("login"),
                 "labels": labels,
-                "classification": classify_item(
-                    repo, labels, cfg, archived=archived
-                ),
+                "classification": classify_item(repo, labels, cfg, archived=archived),
                 "createdAt": issue.get("createdAt"),
                 "updatedAt": issue.get("updatedAt"),
             }
@@ -1465,12 +1432,8 @@ def print_summary(report: dict) -> None:
     print("=== SUMMARY ===")
     print(f"owner: {report['owner']}")
     print(f"repos: {report['repo_count']}")
-    print(
-        f"dependabot: {sum(d['total'] for d in dep)} across {len(dep)} repos"
-    )
-    print(
-        f"code scanning: {sum(c['total'] for c in code)} across {len(code)} repos"
-    )
+    print(f"dependabot: {sum(d['total'] for d in dep)} across {len(dep)} repos")
+    print(f"code scanning: {sum(c['total'] for c in code)} across {len(code)} repos")
     print(
         f"secrets: {sum(s['total'] for s in secrets if s.get('total'))} across "
         f"{sum(1 for s in secrets if s.get('total'))} repos"
@@ -1491,10 +1454,7 @@ def print_summary(report: dict) -> None:
         ok = sum(1 for h in hygiene if h.get("score") == "ok")
         parked = sum(1 for h in hygiene if h.get("score") == "park")
         finding_n = sum(len(h.get("findings") or []) for h in hygiene)
-        print(
-            f"repo hygiene: {needs} needs-work · {ok} ok · {parked} park · "
-            f"{finding_n} findings"
-        )
+        print(f"repo hygiene: {needs} needs-work · {ok} ok · {parked} park · {finding_n} findings")
     print()
 
     if hygiene:
@@ -1508,8 +1468,8 @@ def print_summary(report: dict) -> None:
             print("--- Repo hygiene (needs-work, non-fork) ---")
             for h in sorted(
                 actionable,
-                key=lambda x: -len(
-                    [f for f in (x.get("findings") or []) if f.get("severity") == "high"]
+                key=lambda x: (
+                    -len([f for f in (x.get("findings") or []) if f.get("severity") == "high"])
                 ),
             ):
                 ids = ", ".join(f["id"] for f in (h.get("findings") or [])[:6])
@@ -1534,26 +1494,17 @@ def print_summary(report: dict) -> None:
     if human_prs:
         print("--- Open PRs (human / dep triage) ---")
         for p in human_prs:
-            print(
-                f"  {p['repo']}#{p['number']} [{p.get('size')}] "
-                f"{p['author']}: {p['title'][:70]}"
-            )
+            print(f"  {p['repo']}#{p['number']} [{p.get('size')}] {p['author']}: {p['title'][:70]}")
         print()
     if pipe:
         print("--- Open PRs (pipeline / never-merge) ---")
         for p in pipe:
-            print(
-                f"  {p['repo']}#{p['number']} [{p['classification']}] "
-                f"{p['title'][:70]}"
-            )
+            print(f"  {p['repo']}#{p['number']} [{p['classification']}] {p['title'][:70]}")
         print()
     if park_pr_list:
         print("--- Open PRs (archived — park) ---")
         for p in park_pr_list:
-            print(
-                f"  {p['repo']}#{p['number']} [park] "
-                f"{p['title'][:70]}"
-            )
+            print(f"  {p['repo']}#{p['number']} [park] {p['title'][:70]}")
         print()
 
     human_issues = [i for i in issues if i["classification"] == "human"]
@@ -1716,7 +1667,7 @@ def main() -> int:
         )
 
     report = {
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": datetime.now(UTC).isoformat(),
         "owner": owner,
         "gitroot": str(gitroot),
         "repo_count": len(repos),
@@ -1737,7 +1688,7 @@ def main() -> int:
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = args.out or (out_dir / f"scan-{stamp}.json")
     out_path.write_text(json.dumps(report, indent=2) + "\n")
     # Also write latest symlink-style copy for agents

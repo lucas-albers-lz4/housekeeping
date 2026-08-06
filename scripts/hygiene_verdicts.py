@@ -60,7 +60,10 @@ VERDICT_META = {
     },
     "ship_only": {
         "label": "Only if shipping",
-        "reason": "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — fix only if you ship them.",
+        "reason": (
+            "CI / CodeQL / Node-20 action pins on quiet or toolkit repos — "
+            "fix only if you ship them."
+        ),
     },
 }
 
@@ -101,9 +104,7 @@ def classify_finding(
 ) -> str:
     """Return a VERDICT_ORDER key for one finding on one repo."""
     active = active_forks if active_forks is not None else load_active_forks()
-    pipelines = (
-        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
-    )
+    pipelines = pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     parked = parked_repos if parked_repos is not None else load_parked_repos()
     fid = finding.get("id") or ""
     repo = repo_row.get("repo") or ""
@@ -133,9 +134,7 @@ def group_hygiene_findings(
 ) -> dict[str, list[dict[str, Any]]]:
     """Map verdict → list of {repo, finding_id, severity, size, private, fork}."""
     active = active_forks if active_forks is not None else load_active_forks()
-    pipelines = (
-        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
-    )
+    pipelines = pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     parked = parked_repos if parked_repos is not None else load_parked_repos()
     grouped: dict[str, list[dict[str, Any]]] = {k: [] for k in VERDICT_ORDER}
     for h in hygiene:
@@ -152,8 +151,8 @@ def group_hygiene_findings(
                     "url": h.get("url"),
                 }
             )
-    for v in grouped:
-        grouped[v].sort(key=lambda x: (x.get("finding_id") or "", x.get("repo") or ""))
+    for v, items_v in grouped.items():
+        items_v.sort(key=lambda x: (x.get("finding_id") or "", x.get("repo") or ""))
     return grouped
 
 
