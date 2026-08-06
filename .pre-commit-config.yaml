@@ -1,0 +1,11 @@
+# Pre-commit hooks for housekeeping.
+# Install once:  pip install pre-commit && pre-commit install
+# Run manually:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version — keep in sync with what you develop with.
+    rev: v0.15.22
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

@@ -104,9 +104,7 @@ def classify_finding(
 ) -> str:
     """Return a VERDICT_ORDER key for one finding on one repo."""
     active = active_forks if active_forks is not None else load_active_forks()
-    pipelines = (
-        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
-    )
+    pipelines = pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     parked = parked_repos if parked_repos is not None else load_parked_repos()
     fid = finding.get("id") or ""
     repo = repo_row.get("repo") or ""
@@ -136,9 +134,7 @@ def group_hygiene_findings(
 ) -> dict[str, list[dict[str, Any]]]:
     """Map verdict → list of {repo, finding_id, severity, size, private, fork}."""
     active = active_forks if active_forks is not None else load_active_forks()
-    pipelines = (
-        pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
-    )
+    pipelines = pipeline_repos if pipeline_repos is not None else load_pipeline_repos()
     parked = parked_repos if parked_repos is not None else load_parked_repos()
     grouped: dict[str, list[dict[str, Any]]] = {k: [] for k in VERDICT_ORDER}
     for h in hygiene:
