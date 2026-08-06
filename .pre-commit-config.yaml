@@ -1,5 +1,5 @@
 # Pre-commit hooks for housekeeping.
-# Install once:  pip install pre-commit && pre-commit install
+# Install once:  pip install pre-commit pytest && pre-commit install
 # Run manually:  pre-commit run --all-files
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -9,3 +9,11 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest tests/
+        language: system
+        pass_filenames: false
+        always_run: true
