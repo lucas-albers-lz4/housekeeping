@@ -41,7 +41,7 @@ that adds files from `templates/`.
 | Secret scanning | Enabled on **public** repos (private needs GitHub Advanced Security) |
 | Push protection | Enabled on **public** repos (same GHAS limit for private) |
 | Code scanning | Default setup `configured` **or** CodeQL/osv workflow. Private repos without GHAS are recorded `unavailable_private` and not flagged (same gate as secret scanning) |
-| Branch protection | Default branch protected **or** repo rulesets present (required reviews / status checks). Only checked on owned non-fork repos with code |
+| Branch protection | Default branch protected **or** repo rulesets present. Required reviews are **off by default** for solo owners (`[branch_protection] require_approving_reviews`); set `true` only for team repos. Only checked on owned non-fork repos with code |
 | Workflow permissions | Actions default = `read` (least privilege). `write` default is flagged on repos with code |
 | Secret scanning extras | GHAS repos: validity checks + non-provider patterns should be enabled (low) |
 | SECURITY.md | Required only for repos in `config.toml` `security_repos` (disclosure policy) |
@@ -149,18 +149,28 @@ repos**, and **bricking merges with un-runnable required checks**.
 
 ### Branch protection on a single-owner repo
 
-- **`enforce_admins: false`** — with `true`, required reviews apply to the
-  owner too, and a solo owner has nobody to approve their own PRs → **the
-  owner can no longer merge anything**. Admin bypass is the point for
-  single-owner repos. Protection still governs future collaborators.
+Config: `[branch_protection] require_approving_reviews` in `config.toml`
+(default **`false`**). Controls both hygiene findings and batch-apply advice.
+
+- **`require_approving_reviews = false` (solo default)** — do **not** add
+  required reviews when applying protection; `branch_unprotected` must not
+  suggest them. If a repo already has `required_approving_review_count >= 1`,
+  emit `branch_requires_reviews` (fix-direct). GitHub forbids self-approve,
+  so count≥1 bricks every owner/agent merge without `--admin`.
+- **`require_approving_reviews = true` (team)** — unprotected finding may
+  suggest required reviews + status checks; do not emit
+  `branch_requires_reviews`.
+- **`enforce_admins: false`** — keep false for solo-owner repos so other
+  rules remain bypassable if needed. Protection still governs future
+  collaborators.
 - **Do NOT require status checks that don't run on PRs.** A check that only
   fires on `push` to main or on tags (release/publish workflows) never reports
   on a PR, so a required check name that never runs **blocks every merge
   forever**. Only require checks verified to run on `pull_request` events
   (query `check-runs` on a recent PR head, not just the workflow list).
-- Safe baseline for solo repos: `required_approving_review_count: 1` +
-  `dismiss_stale_reviews: true` + `enforce_admins: false`, no required status
-  checks until CI-on-PR is confirmed.
+- Safe baseline for solo repos: protection with force-push/deletion blocked +
+  `enforce_admins: false` + **no** required approving reviews; no required
+  status checks until CI-on-PR is confirmed.
 - Private repos without GitHub Pro: the branch-protection and rulesets APIs
   return **403** (`Upgrade to GitHub Pro or make this repository public`).
   Report `branch_protection: null` (unknown) and do **not** emit a finding —

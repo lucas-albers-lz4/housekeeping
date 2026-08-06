@@ -88,6 +88,13 @@ DEFAULT_README_POLISH: dict = {
     "enabled": True,
 }
 
+# Default-branch protection policy for hygiene findings + apply guardrails.
+# Solo-owner default: do not require/suggest approving reviews (GitHub forbids
+# self-approve → owner/agent merges brick without --admin every time).
+DEFAULT_BRANCH_PROTECTION: dict = {
+    "require_approving_reviews": False,
+}
+
 # Markdown / HTML badge image markup in READMEs.
 _MD_BADGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _HTML_IMG_RE = re.compile(
@@ -363,6 +370,16 @@ def _load_readme_polish_cfg(cfg: dict | None) -> dict:
         return out
     if "enabled" in raw:
         out["enabled"] = bool(raw["enabled"])
+    return out
+
+
+def _load_branch_protection_cfg(cfg: dict | None) -> dict:
+    raw = (cfg or {}).get("branch_protection")
+    out = dict(DEFAULT_BRANCH_PROTECTION)
+    if not isinstance(raw, dict):
+        return out
+    if "require_approving_reviews" in raw:
+        out["require_approving_reviews"] = bool(raw["require_approving_reviews"])
     return out
 
 
@@ -727,6 +744,7 @@ def scan_repo_hygiene(
     skip_branch_cleanup: bool = False,
     readme_polish_cfg: dict | None = None,
     skip_readme_polish: bool = False,
+    branch_protection_cfg: dict | None = None,
     pipeline_repos: set[str] | None = None,
     parked_repos: set[str] | None = None,
     no_ci_repos: set[str] | None = None,
@@ -739,6 +757,8 @@ def scan_repo_hygiene(
     node20_min_majors = node20_min_majors or dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
     branch_cleanup_cfg = branch_cleanup_cfg or dict(DEFAULT_BRANCH_CLEANUP)
     readme_polish_cfg = readme_polish_cfg or dict(DEFAULT_README_POLISH)
+    branch_protection_cfg = branch_protection_cfg or dict(DEFAULT_BRANCH_PROTECTION)
+    require_reviews = bool(branch_protection_cfg.get("require_approving_reviews"))
     pipeline_repos = pipeline_repos or set()
     parked_repos = parked_repos or set()
     no_ci_repos = no_ci_repos or set()
@@ -1003,15 +1023,44 @@ def scan_repo_hygiene(
             # Fail closed: both unknown → report nothing rather than a false "unprotected".
             pass
         elif branch_protection is None and not rulesets:
+            if require_reviews:
+                unprotected_msg = (
+                    "Default branch has no branch protection and no rulesets — "
+                    "consider required reviews + status checks"
+                )
+            else:
+                unprotected_msg = (
+                    "Default branch has no branch protection and no rulesets — "
+                    "consider protection (block force-push/deletion; optional "
+                    "status checks). Do not require approving reviews on "
+                    "solo-owner repos (GitHub forbids self-approve)"
+                )
             findings.append(
                 _finding(
                     "branch_unprotected",
                     "medium",
                     "fix-direct",
-                    "Default branch has no branch protection and no rulesets — "
-                    "consider required reviews + status checks",
+                    unprotected_msg,
                 )
             )
+        elif (
+            not require_reviews
+            and isinstance(branch_protection, dict)
+        ):
+            reviews = branch_protection.get("required_pull_request_reviews") or {}
+            count = reviews.get("required_approving_review_count") or 0
+            if count >= 1:
+                findings.append(
+                    _finding(
+                        "branch_requires_reviews",
+                        "medium",
+                        "fix-direct",
+                        "Required approving reviews block solo-owner/self merges "
+                        "(GitHub forbids self-approve). Remove the review rule, "
+                        "or set [branch_protection] require_approving_reviews = true "
+                        "if a second reviewer is intentional",
+                    )
+                )
         wf_perms = _actions_workflow_permissions(owner, repo)
         if wf_perms == "write":
             findings.append(
@@ -1706,6 +1755,7 @@ def main() -> int:
     node20_mins = _load_node20_min_majors(cfg)
     branch_cleanup = _load_branch_cleanup_cfg(cfg)
     readme_polish = _load_readme_polish_cfg(cfg)
+    branch_protection = _load_branch_protection_cfg(cfg)
     pipeline_repos = set(cfg.get("pipeline_repos") or [])
     parked_repos = set(cfg.get("parked_repos") or [])
     active_forks = set(cfg.get("active_forks") or [])
@@ -1755,6 +1805,7 @@ def main() -> int:
                     skip_branch_cleanup=args.skip_branch_cleanup,
                     readme_polish_cfg=readme_polish,
                     skip_readme_polish=args.skip_readme_polish,
+                    branch_protection_cfg=branch_protection,
                     pipeline_repos=pipeline_repos,
                     parked_repos=parked_repos,
                     no_ci_repos=no_ci_repos,

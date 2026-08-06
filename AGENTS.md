@@ -69,7 +69,7 @@ python3 scripts/scan.py --repos irr,fwlive
 
 | Path | Role |
 |------|------|
-| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `readme_polish`, Node 20 mins |
+| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `branch_protection`, `readme_polish`, Node 20 mins |
 | `scripts/scan.py` | owner-wide scan |
 | `scripts/triage_queue.py` | queue printer |
 | `scripts/hygiene_verdicts.py` | park / tier2 / suggest_only / active_fork / ship_only |
