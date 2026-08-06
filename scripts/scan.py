@@ -213,6 +213,14 @@ def list_repos(owner: str) -> list[dict]:
     return data
 
 
+def owner_is_user_account(owner: str) -> bool:
+    """True if owner is a personal User account (not an org/enterprise)."""
+    data, err = gh_json(["api", f"users/{owner}"])
+    if err or not isinstance(data, dict):
+        return False
+    return data.get("type") == "User"
+
+
 def _default_branch(repo_meta: dict) -> str:
     ref = repo_meta.get("defaultBranchRef")
     if isinstance(ref, dict):
@@ -723,6 +731,7 @@ def scan_repo_hygiene(
     parked_repos: set[str] | None = None,
     no_ci_repos: set[str] | None = None,
     security_repos: set[str] | None = None,
+    owner_is_user: bool = False,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
@@ -1016,15 +1025,23 @@ def scan_repo_hygiene(
             )
 
     # GHAS sub-features: only meaningful when secret scanning is actually enabled.
+    # For User accounts (no org), these are NOT settable via REST — only via the
+    # repo Settings → Code security UI — so the finding is suggest, not fix-direct.
     if not secret_scanning_unavailable_private and secret_scan == "enabled":
+        ghas_size = "suggest" if owner_is_user else park_size
+        ghas_note = (
+            " (User account: enable in repo Settings → Code security; no REST API)"
+            if owner_is_user
+            else ""
+        )
         validity = sa_status(sa, "secret_scanning_validity_checks")
         if validity != "enabled":
             findings.append(
                 _finding(
                     "secret_validity_checks_off",
                     "low",
-                    park_size,
-                    "Secret scanning validity checks disabled — enabled on GHAS repos",
+                    ghas_size,
+                    "Secret scanning validity checks disabled — enable on GHAS repos" + ghas_note,
                 )
             )
         non_provider = sa_status(sa, "secret_scanning_non_provider_patterns")
@@ -1033,8 +1050,9 @@ def scan_repo_hygiene(
                 _finding(
                     "secret_nonprovider_patterns_off",
                     "low",
-                    park_size,
-                    "Secret scanning non-provider patterns disabled — enabled on GHAS repos",
+                    ghas_size,
+                    "Secret scanning non-provider patterns disabled — enable on GHAS repos"
+                    + ghas_note,
                 )
             )
 
@@ -1693,6 +1711,7 @@ def main() -> int:
     active_forks = set(cfg.get("active_forks") or [])
     no_ci_repos = set(cfg.get("no_ci_repos") or [])
     security_repos = set(cfg.get("security_repos") or [])
+    owner_user = owner_is_user_account(owner)
 
     repos = list_repos(owner)
     if args.repos:
@@ -1740,6 +1759,7 @@ def main() -> int:
                     parked_repos=parked_repos,
                     no_ci_repos=no_ci_repos,
                     security_repos=security_repos,
+                    owner_is_user=owner_user,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):

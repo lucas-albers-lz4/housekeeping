@@ -265,3 +265,56 @@ def test_classify_finding_verdicts():
         == "pipeline_skip"
     )
     assert classify_finding(cfg_repo, {"id": "x"}, parked_repos={"x"}) == "park_repo"
+
+
+# ---------------------------------------------------------------------------
+# GHAS sub-feature findings on User accounts
+# ---------------------------------------------------------------------------
+
+
+def test_ghas_findings_suggest_on_user_account(monkeypatch):
+    """On a User account the GHAS sub-feature toggles are UI-only (no REST API),
+    so the findings must be size=suggest with a UI pointer, not fix-direct."""
+    from scan import scan_repo_hygiene
+
+    def fake_gh_api_object(path):
+        # Minimal repo meta: public, secret scanning enabled (GHAS present).
+        if path.endswith("/code-scanning/default-setup"):
+            return {"state": "configured"}, None
+        if path.startswith("repos/"):
+            return {
+                "fork": False,
+                "archived": False,
+                "private": False,
+                "default_branch": "main",
+                "security_and_analysis": {
+                    "secret_scanning": {"status": "enabled"},
+                    "secret_scanning_validity_checks": {"status": "disabled"},
+                    "secret_scanning_non_provider_patterns": {"status": "disabled"},
+                    "secret_scanning_push_protection": {"status": "enabled"},
+                },
+            }, None
+        return None, "disabled_or_unavailable"
+
+    monkeypatch.setattr(scan, "gh_api_object", fake_gh_api_object)
+    monkeypatch.setattr(scan, "gh_api", lambda *a, **k: ([], None))
+    monkeypatch.setattr(scan, "gh_api_status", lambda *a, **k: 204)
+    monkeypatch.setattr(scan, "_repo_tree_paths", lambda *a, **k: ["go.mod"])
+    monkeypatch.setattr(scan, "_detect_ecosystems", lambda p: {"gomod"})
+    monkeypatch.setattr(scan, "_default_branch_protection", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "_repo_rulesets", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "_actions_workflow_permissions", lambda *a, **k: None)
+
+    row = scan_repo_hygiene("owner", "repo", owner_is_user=True)
+    ghas = [f for f in row["findings"] if f["id"].startswith("secret_")]
+    assert ghas, "expected GHAS sub-feature findings"
+    for f in ghas:
+        assert f["size"] == "suggest"
+        assert "Settings → Code security" in f["message"]
+
+    # Org account: same findings stay fix-direct.
+    row_org = scan_repo_hygiene("owner", "repo", owner_is_user=False)
+    ghas_org = [f for f in row_org["findings"] if f["id"].startswith("secret_")]
+    assert ghas_org
+    for f in ghas_org:
+        assert f["size"] == "fix-direct"
