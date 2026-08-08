@@ -64,7 +64,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `never_merge_labels` | e.g. `miner-eval` |
 | `node20_action_min_majors` | Min majors for Node-24-capable first-party actions |
 | `[branch_protection] require_approving_reviews` | Suggest/require PR reviews (default `false` for solo owners) |
-| `[codeql] required_query_suite` | Default-setup suite floor: `security-and-quality` (default) / `security-extended` pass; `default` triggers `codeql_default_query_suite`; set `"default"` to disable |
+| `[codeql] required_query_suite` | Default-setup suite floor: `extended` (default) / stronger passes; `default` triggers `codeql_default_query_suite`; set `"default"` to disable |
 
 ## Project skill
 

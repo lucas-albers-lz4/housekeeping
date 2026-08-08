@@ -493,28 +493,33 @@ def test_workflow_paths_ignore_all():
 
 
 def test_load_codeql_suite():
-    assert scan._load_codeql_suite(None) == "security-and-quality"
-    assert scan._load_codeql_suite({"codeql": {"required_query_suite": "security-extended"}}) == (
-        "security-extended"
-    )
+    assert scan._load_codeql_suite(None) == "extended"
+    assert scan._load_codeql_suite(
+        {"codeql": {"required_query_suite": "security-and-quality"}}
+    ) == ("security-and-quality")
+    assert scan._load_codeql_suite({"codeql": {"required_query_suite": "Extended"}}) == "extended"
     assert scan._load_codeql_suite({"codeql": {"required_query_suite": "default"}}) == "default"
-    assert scan._load_codeql_suite({"codeql": {"other": 1}}) == "security-and-quality"
+    assert scan._load_codeql_suite({"codeql": {"other": 1}}) == "extended"
 
 
-def _hygiene_row(monkeypatch, default_setup_state, no_ci=()):
+def _hygiene_row(
+    monkeypatch, default_setup_state, no_ci=(), suite_value="default", config_file=None
+):
     """Drive scan_repo_hygiene with mocked gh; return the row dict."""
     scan_repo_hygiene = scan.scan_repo_hygiene
 
     def fake_gh_api_object(path):
         if path.endswith("/code-scanning/default-setup"):
             if default_setup_state == "configured":
-                return {
+                cs = {
                     "state": "configured",
-                    "query_suite": "default",
                     "languages": ["python"],
                     "schedule": "weekly",
                     "updated_at": "2026-08-08T00:00:00Z",
-                }, None
+                }
+                if suite_value is not None:
+                    cs["query_suite"] = suite_value
+                return cs, None
             return {"state": "not-configured"}, None
         if path.endswith("/actions/workflows"):
             return {"workflows": []}, None
@@ -524,6 +529,7 @@ def _hygiene_row(monkeypatch, default_setup_state, no_ci=()):
                 "archived": False,
                 "private": False,
                 "default_branch": "main",
+                "codeql_config_file": config_file,
                 "security_and_analysis": {
                     "secret_scanning": {"status": "enabled"},
                     "secret_scanning_push_protection": {"status": "enabled"},
@@ -570,3 +576,36 @@ def test_codeql_suite_check_disabled_via_config(monkeypatch):
     )
     ids = {f["id"] for f in row_off["findings"]}
     assert "codeql_default_query_suite" not in ids
+
+
+def test_codeql_extended_suite_passes_floor(monkeypatch):
+    row = _hygiene_row(monkeypatch, "configured", suite_value="extended")
+    ids = {f["id"] for f in row["findings"]}
+    assert "codeql_default_query_suite" not in ids
+
+
+def test_codeql_missing_suite_fails_closed(monkeypatch):
+    # API returns state=configured without query_suite → treated as weakest.
+    row = _hygiene_row(monkeypatch, "configured", suite_value=None)
+    ids = {f["id"] for f in row["findings"]}
+    assert "codeql_default_query_suite" in ids
+
+
+def test_codeql_config_file_skips_suite_check(monkeypatch):
+    # github-codeql-config-file merges custom queries → floor check not applied.
+    row = _hygiene_row(monkeypatch, "configured", config_file="codeql-config.yml")
+    ids = {f["id"] for f in row["findings"]}
+    assert "codeql_default_query_suite" not in ids
+
+
+def test_workflow_branch_glob_semantics():
+    # `**` / `*` allowlists cover the default branch; literal lists still exclude.
+    assert not scan._workflow_excludes_branch("on:\n  push:\n    branches: ['**']", "main")
+    assert not scan._workflow_excludes_branch("on:\n  push:\n    branches: ['*']", "main")
+    assert not scan._workflow_excludes_branch("on:\n  push:\n    branches: ['*']", "master")
+    assert scan._workflow_excludes_branch("on:\n  push:\n    branches: ['release/*']", "main")
+    assert not scan._workflow_excludes_branch(
+        "on:\n  push:\n    branches: ['release/*']", "release/1.0"
+    )
+    # glob in block form too
+    assert not scan._workflow_excludes_branch("on:\n  push:\n    branches:\n      - '**'\n", "main")

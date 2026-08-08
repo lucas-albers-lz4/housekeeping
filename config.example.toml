@@ -80,8 +80,10 @@ require_approving_reviews = false
 "actions/upload-artifact" = 5
 "actions/download-artifact" = 5
 
-# CodeQL default-setup query suite floor. `security-and-quality` (default)
-# and `security-extended` pass; `default` triggers `codeql_default_query_suite`.
-# Set to "default" to disable that check.
+# CodeQL default-setup query suite floor. The REST API only accepts
+# `default` | `extended`, so `extended` (default) is the achievable floor;
+# `default` triggers `codeql_default_query_suite`. Set to "default" to disable.
+# Stronger suites (security-and-quality) are reachable via a CodeQL config
+# file (github-codeql-config-file repo property) — raise the floor accordingly.
 [codeql]
-required_query_suite = "security-and-quality"
+required_query_suite = "extended"

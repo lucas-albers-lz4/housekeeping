@@ -40,7 +40,7 @@ that adds files from `templates/`.
 | `.github/dependabot.yml` | Present; ecosystems cover detected manifests + `github-actions` when workflows exist |
 | Secret scanning | Enabled on **public** repos (private needs GitHub Advanced Security) |
 | Push protection | Enabled on **public** repos (same GHAS limit for private) |
-| Code scanning | Default setup `configured` **or** active CodeQL/osv workflow. Private repos without GHAS are recorded `unavailable_private` and not flagged (same gate as secret scanning). When configured: query suite must be `security-extended`/`security-and-quality`; advanced workflows must be active, trigger on push/PR or schedule, cover the default branch, declare `security-events: write`, and not blanket-ignore paths |
+| Code scanning | Default setup `configured` **or** active CodeQL/osv workflow. Private repos without GHAS are recorded `unavailable_private` and not flagged (same gate as secret scanning). When configured: query suite must meet the `[codeql] required_query_suite` floor (`extended` by default — the REST API max; the `github-codeql-config-file` repo property skips the floor check); advanced workflows must be active, trigger on push/PR or schedule, cover the default branch, declare `security-events: write`, and not blanket-ignore paths |
 | Branch protection | Default branch protected **or** repo rulesets present. Required reviews are **off by default** for solo owners (`[branch_protection] require_approving_reviews`); set `true` only for team repos. Only checked on owned non-fork repos with code |
 | Workflow permissions | Actions default = `read` (least privilege). `write` default is flagged on repos with code |
 | Secret scanning extras | GHAS repos: validity checks + non-provider patterns should be enabled (low) |
@@ -58,19 +58,23 @@ Node 24). Fix by bumping `uses:` majors in a PR — **not** by changing job
 CodeQL configuration findings (deep checks, read-only): once code scanning is
 present, the scan validates its **quality**, not just existence. Default-setup
 repos are checked against the `[codeql] required_query_suite` floor
-(`codeql_default_query_suite`, medium/fix-direct — PATCH default-setup) and
-for languages present in the tree but absent from the analysis list
+(`codeql_default_query_suite`, medium/fix-direct — PATCH default-setup
+`query_suite=extended`; note the REST API accepts only `default`|`extended`,
+the PATCH returns 202 and applies via an Actions run, and a repo with the
+`github-codeql-config-file` property set skips the floor check) and for
+languages present in the tree but absent from the analysis list
 (`codeql_language_gap`, low/suggest — auto-detection usually self-heals on
 push). Advanced-setup workflows (committed `codeql.yml`) are validated via the
 workflows API state and file content: disabled workflows
 (`codeql_workflow_disabled`), missing push/PR/schedule triggers or branch
-filters that exclude the default branch (`codeql_workflow_inert`), missing
-`permissions: security-events: write` (`codeql_workflow_no_security_events`),
-no `queries:`/`packs:` suite (default suite only, `codeql_workflow_default_queries`,
-low/suggest), `github/codeql-action` pinned below v3
-(`codeql_action_major_old`), and blanket `paths-ignore: ['**']`
-(`codeql_workflow_paths_ignored`). All medium findings are fix-direct; the
-low/suggest pair is filed as issues per housekeeping convention.
+filters that exclude the default branch — glob-aware, `**`/`*` cover
+(`codeql_workflow_inert`), missing `permissions: security-events: write`
+(`codeql_workflow_no_security_events`), no `queries:`/`packs:` suite (default
+suite only, `codeql_workflow_default_queries`, low/suggest),
+`github/codeql-action` pinned below v3 (`codeql_action_major_old`), and
+blanket `paths-ignore: ['**']` on push/PR only (`codeql_workflow_paths_ignored`).
+All medium findings are fix-direct; the low/suggest pair is filed as issues
+per housekeeping convention.
 
 Finding `stale_merged_branches` (low, **suggest-only**): remote heads of PRs
 merged more than `merged_retention_days` ago (default 30) that still exist.

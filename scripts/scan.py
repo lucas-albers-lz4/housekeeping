@@ -61,11 +61,20 @@ DEFAULT_NODE20_ACTION_MIN_MAJORS: dict[str, int] = {
     "actions/download-artifact": 5,
 }
 
-# CodeQL default-setup minimum query suite. `default` is the weakest; GitHub
-# recommends security-extended or security-and-quality. Config override:
-# [codeql] required_query_suite (set to "default" to disable the check).
-DEFAULT_CODEQL_REQUIRED_QUERY_SUITE = "security-and-quality"
-ACCEPTABLE_CODEQL_SUITES = {"security-extended", "security-and-quality"}
+# CodeQL default-setup query suite floor. The REST API only accepts
+# `default` | `extended` (security-and-quality is UI/config-file only), so the
+# achievable floor is `extended`. Config override: [codeql] required_query_suite
+# (set to "default" to disable the check).
+DEFAULT_CODEQL_REQUIRED_QUERY_SUITE = "extended"
+
+# Suite strength ranking. API values are `default`/`extended`; the
+# `security-*` spellings are accepted defensively (UI/config-file paths).
+CODEQL_SUITE_RANK: dict[str, int] = {
+    "default": 0,
+    "extended": 1,
+    "security-extended": 1,
+    "security-and-quality": 2,
+}
 
 # Repo file extension → CodeQL default-setup language id.
 CODEQL_LANGUAGE_BY_EXT: dict[str, str] = {
@@ -360,7 +369,7 @@ def _workflow_excludes_branch(text: str, default_branch: str) -> bool:
         if m.group(1) == "branches-ignore":
             if default_branch in listed:
                 return True
-        elif default_branch not in listed:
+        elif not _branch_glob_covers(listed, default_branch):
             return True
     for m in re.finditer(
         r"(?m)^\s*(branches|branches-ignore)\s*:\s*\n((?:\s*-\s*[^\n#]+\n?)+)", text
@@ -375,7 +384,20 @@ def _workflow_excludes_branch(text: str, default_branch: str) -> bool:
         if m.group(1) == "branches-ignore":
             if default_branch in listed:
                 return True
-        elif default_branch not in listed:
+        elif not _branch_glob_covers(listed, default_branch):
+            return True
+    return False
+
+
+def _branch_glob_covers(patterns: set[str], branch: str) -> bool:
+    """GitHub branch-filter glob semantics: `**` crosses '/', `*` matches any
+    run of non-'/' characters, plain names match only themselves. `!`-negated
+    patterns are not handled (rare in branch filters)."""
+    for p in patterns:
+        if p.startswith("!"):
+            continue
+        rx = re.escape(p).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        if re.fullmatch(rx, branch):
             return True
     return False
 
@@ -436,13 +458,13 @@ def _workflow_paths_ignore_all(text: str) -> bool:
 
 
 def _load_codeql_suite(cfg: dict | None) -> str:
-    """[codeql] required_query_suite — 'security-and-quality' (default),
-    'security-extended', or 'default' (disables the suite check)."""
+    """[codeql] required_query_suite — 'extended' (default), a stronger suite
+    like 'security-and-quality' (config-file path), or 'default' (disables)."""
     raw = (cfg or {}).get("codeql")
     if isinstance(raw, dict):
         val = raw.get("required_query_suite")
         if isinstance(val, str) and val.strip():
-            return val.strip()
+            return val.strip().lower()
     return DEFAULT_CODEQL_REQUIRED_QUERY_SUITE
 
 
@@ -977,7 +999,7 @@ def scan_repo_hygiene(
     # Workflow state is ground truth for advanced setup: a committed codeql.yml
     # that is disabled (invalid YAML / manually) scans nothing. The workflows
     # API also lists GitHub-managed default-setup dynamic workflows.
-    codeql_workflows, _ = gh_api_object(f"repos/{owner}/{repo}/actions/workflows")
+    codeql_workflows, _ = gh_api_object(f"repos/{owner}/{repo}/actions/workflows?per_page=100")
     codeql_workflow_states = {
         w.get("path"): w.get("state")
         for w in (codeql_workflows or {}).get("workflows", [])
@@ -1194,15 +1216,24 @@ def scan_repo_hygiene(
                 schedule=cs.get("schedule"),
                 updated_at=cs.get("updated_at"),
             )
-            suite_min = codeql_required_suite or DEFAULT_CODEQL_REQUIRED_QUERY_SUITE
-            if suite and suite not in ACCEPTABLE_CODEQL_SUITES and suite_min != "default":
+            suite_min = (codeql_required_suite or DEFAULT_CODEQL_REQUIRED_QUERY_SUITE).lower()
+            # A missing/unknown suite is treated as the weakest (`default`) —
+            # fail closed. Custom config files (github-codeql-config-file) merge
+            # their own query suites, so the plain floor check does not apply.
+            actual_rank = CODEQL_SUITE_RANK.get((suite or "").lower(), 0)
+            if (
+                suite_min != "default"
+                and actual_rank < CODEQL_SUITE_RANK.get(suite_min, 0)
+                and not meta.get("codeql_config_file")
+            ):
                 findings.append(
                     _finding(
                         "codeql_default_query_suite",
                         "medium",
                         park_size,
-                        f"CodeQL default-setup query suite is '{suite}' — enable "
-                        f"'{suite_min}' (or security-extended) for broader coverage",
+                        f"CodeQL default-setup query suite is '{suite or 'unknown'}' — "
+                        f"below the '{suite_min}' floor (PATCH query_suite=extended, "
+                        "or point github-codeql-config-file at a stronger suite)",
                     )
                 )
             missing = sorted(_codeql_languages_from_paths(paths) - langs)
@@ -1289,14 +1320,14 @@ def scan_repo_hygiene(
                         + " — bump to @v3",
                     )
                 )
-            if _workflow_paths_ignore_all(text):
+            if push_pr and _workflow_paths_ignore_all(text):
                 findings.append(
                     _finding(
                         "codeql_workflow_paths_ignored",
                         "medium",
                         park_size,
-                        f"CodeQL workflow {wf} has a blanket paths-ignore ('**') — "
-                        "push/PR events never analyze anything",
+                        f"CodeQL workflow {wf} has a blanket paths-ignore ('**') on "
+                        "push/PR — those events never analyze anything",
                     )
                 )
 
