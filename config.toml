@@ -100,3 +100,9 @@ require_approving_reviews = false
 "actions/cache" = 5
 "actions/upload-artifact" = 5
 "actions/download-artifact" = 5
+
+# CodeQL default-setup query suite floor. `security-and-quality` (default)
+# and `security-extended` pass; `default` triggers `codeql_default_query_suite`.
+# Set to "default" to disable that check.
+[codeql]
+required_query_suite = "security-and-quality"

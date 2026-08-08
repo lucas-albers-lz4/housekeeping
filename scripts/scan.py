@@ -61,6 +61,36 @@ DEFAULT_NODE20_ACTION_MIN_MAJORS: dict[str, int] = {
     "actions/download-artifact": 5,
 }
 
+# CodeQL default-setup minimum query suite. `default` is the weakest; GitHub
+# recommends security-extended or security-and-quality. Config override:
+# [codeql] required_query_suite (set to "default" to disable the check).
+DEFAULT_CODEQL_REQUIRED_QUERY_SUITE = "security-and-quality"
+ACCEPTABLE_CODEQL_SUITES = {"security-extended", "security-and-quality"}
+
+# Repo file extension → CodeQL default-setup language id.
+CODEQL_LANGUAGE_BY_EXT: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript-typescript",
+    ".jsx": "javascript-typescript",
+    ".mjs": "javascript-typescript",
+    ".cjs": "javascript-typescript",
+    ".ts": "javascript-typescript",
+    ".tsx": "javascript-typescript",
+    ".go": "go",
+    ".java": "java-kotlin",
+    ".kt": "java-kotlin",
+    ".kts": "java-kotlin",
+    ".c": "c-cpp",
+    ".h": "c-cpp",
+    ".cc": "c-cpp",
+    ".cpp": "c-cpp",
+    ".cxx": "c-cpp",
+    ".hpp": "c-cpp",
+    ".cs": "csharp",
+    ".rb": "ruby",
+    ".swift": "swift",
+}
+
 # Branch cleanup defaults (suggest-only; never auto-delete in scan).
 DEFAULT_BRANCH_CLEANUP: dict = {
     "enabled": True,
@@ -285,6 +315,135 @@ def _action_major(ref: str) -> int | None:
     if not m:
         return None
     return int(m.group(1))
+
+
+def _codeql_languages_from_paths(paths: list[str], min_files: int = 3) -> set[str]:
+    """CodeQL language ids with >= min_files source files in the repo tree."""
+    counts: dict[str, int] = collections.Counter()
+    for p in paths:
+        lang = CODEQL_LANGUAGE_BY_EXT.get(Path(p).suffix.lower())
+        if lang:
+            counts[lang] += 1
+    return {lang for lang, n in counts.items() if n >= min_files}
+
+
+def _workflow_triggers(text: str) -> tuple[bool, bool]:
+    """(has_push_or_pr, has_schedule) for a workflow file.
+
+    Handles the template shapes: `on: push` shorthand and the block form with
+    push / pull_request / pull_request_target / schedule keys.
+    """
+    if not text:
+        return False, False
+    shorthand = re.search(r"(?m)^\s*on\s*:\s*(push|pull_request|pull_request_target)\b", text)
+    push_pr = bool(
+        shorthand or re.search(r"(?m)^\s*(push|pull_request|pull_request_target)\s*:", text)
+    )
+    schedule = bool(re.search(r"(?m)^\s*schedule\s*:", text))
+    return push_pr, schedule
+
+
+def _workflow_excludes_branch(text: str, default_branch: str) -> bool:
+    """True when a branches: allowlist omits default_branch (or a
+    branches-ignore: lists it) — push/PR events on the default branch then
+    never trigger the workflow."""
+    if not text or not default_branch:
+        return False
+
+    def _listed(values: str) -> set[str]:
+        return {v.strip().strip("'\"") for v in values.split(",") if v.strip()}
+
+    for m in re.finditer(r"(?m)^\s*(branches|branches-ignore)\s*:\s*\[([^\]]*)\]", text):
+        listed = _listed(m.group(2))
+        if not listed:
+            continue
+        if m.group(1) == "branches-ignore":
+            if default_branch in listed:
+                return True
+        elif default_branch not in listed:
+            return True
+    for m in re.finditer(
+        r"(?m)^\s*(branches|branches-ignore)\s*:\s*\n((?:\s*-\s*[^\n#]+\n?)+)", text
+    ):
+        listed = {
+            line.strip().lstrip("-").strip().strip("'\"")
+            for line in m.group(2).splitlines()
+            if line.strip().lstrip("-").strip()
+        }
+        if not listed:
+            continue
+        if m.group(1) == "branches-ignore":
+            if default_branch in listed:
+                return True
+        elif default_branch not in listed:
+            return True
+    return False
+
+
+def _workflow_has_security_events(text: str) -> bool:
+    """security-events: write permission (required for SARIF upload)."""
+    return bool(re.search(r"(?m)^\s*security-events\s*:\s*write\b", text))
+
+
+def _workflow_queries_suite(text: str) -> str | None:
+    """Query suite configured via uncommented queries: / packs: lines.
+
+    Returns 'security-and-quality' | 'security-extended' | 'custom' | 'default'
+    | None (no suite configuration at all → default suite only)."""
+    if re.search(r"(?m)^\s*packs\s*:", text):
+        return "custom"
+    m = re.search(r"(?m)^\s*queries\s*:\s*([^\n#]+)", text)
+    if not m:
+        return None
+    suite = m.group(1).strip().strip("'\"")
+    if "security-and-quality" in suite:
+        return "security-and-quality"
+    if "security-extended" in suite:
+        return "security-extended"
+    if suite.startswith(".") or ".ql" in suite or "/" in suite:
+        return "custom"
+    return "default"
+
+
+def _codeql_action_majors(text: str) -> list[tuple[str, str]]:
+    """[(step, ref)] for github/codeql-action pins below v3 (deprecated)."""
+    out: list[tuple[str, str]] = []
+    for raw in USES_ACTION_RE.findall(text):
+        pin = raw.strip()
+        if not pin.startswith("github/codeql-action/"):
+            continue
+        if "@" not in pin:
+            continue
+        step, _, ref = pin.partition("@")
+        major = _action_major(ref)
+        if major is not None and major < 3:
+            out.append((step.split("/")[-1], ref))
+    return out
+
+
+def _workflow_paths_ignore_all(text: str) -> bool:
+    """Blanket `paths-ignore: ['**']` on push/PR — the workflow is inert."""
+    for m in re.finditer(r"(?m)^\s*paths-ignore\s*:\s*\[([^\]]*)\]", text):
+        if any(x.strip().strip("'\"") == "**" for x in m.group(1).split(",")):
+            return True
+    for m in re.finditer(r"(?m)^\s*paths-ignore\s*:\s*\n((?:\s*-\s*[^\n#]+\n?)+)", text):
+        if any(
+            line.strip().lstrip("-").strip().strip("'\"") == "**"
+            for line in m.group(1).splitlines()
+        ):
+            return True
+    return False
+
+
+def _load_codeql_suite(cfg: dict | None) -> str:
+    """[codeql] required_query_suite — 'security-and-quality' (default),
+    'security-extended', or 'default' (disables the suite check)."""
+    raw = (cfg or {}).get("codeql")
+    if isinstance(raw, dict):
+        val = raw.get("required_query_suite")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return DEFAULT_CODEQL_REQUIRED_QUERY_SUITE
 
 
 def _load_node20_min_majors(cfg: dict | None) -> dict[str, int]:
@@ -750,6 +909,7 @@ def scan_repo_hygiene(
     no_ci_repos: set[str] | None = None,
     security_repos: set[str] | None = None,
     owner_is_user: bool = False,
+    codeql_required_suite: str | None = None,
 ) -> dict:
     """Read-only Tier-1/2 config audit for one repo."""
     list_meta = list_meta or {}
@@ -814,6 +974,16 @@ def scan_repo_hygiene(
     default_setup, _ = gh_api_object(f"repos/{owner}/{repo}/code-scanning/default-setup")
     cs_state = (default_setup or {}).get("state")  # configured | not-configured | …
 
+    # Workflow state is ground truth for advanced setup: a committed codeql.yml
+    # that is disabled (invalid YAML / manually) scans nothing. The workflows
+    # API also lists GitHub-managed default-setup dynamic workflows.
+    codeql_workflows, _ = gh_api_object(f"repos/{owner}/{repo}/actions/workflows")
+    codeql_workflow_states = {
+        w.get("path"): w.get("state")
+        for w in (codeql_workflows or {}).get("workflows", [])
+        if "codeql" in (w.get("name") or "").lower() or "codeql" in (w.get("path") or "").lower()
+    }
+
     paths = _repo_tree_paths(owner, repo, branch) or []
     detected = _detect_ecosystems(paths)
     workflow_paths = [
@@ -827,8 +997,15 @@ def scan_repo_hygiene(
         p in ("renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5")
         for p in paths
     )
-    has_codeql_workflow = any(
-        "codeql" in p.lower() and p.startswith(".github/workflows/") for p in paths
+    has_codeql_workflow = any(s == "active" for s in codeql_workflow_states.values())
+    if codeql_workflows is None:
+        # Workflows API unavailable → fall back to filename detection so we
+        # never emit a false code_scanning_not_configured (fail closed).
+        has_codeql_workflow = any(
+            "codeql" in p.lower() and p.startswith(".github/workflows/") for p in paths
+        )
+    codeql_workflow_paths = sorted(
+        p for p in codeql_workflow_states if p.startswith(".github/workflows/")
     )
     has_osv_workflow = any("osv" in p.lower() and p.startswith(".github/workflows/") for p in paths)
     has_dependency_review = any(
@@ -1002,6 +1179,127 @@ def scan_repo_hygiene(
             )
         )
 
+    # --- Deep CodeQL configuration checks (default-setup quality + advanced
+    # workflow correctness). Read-only; the fixes are settings PATCHes or PRs.
+    codeql_config: dict = {"mode": "none", "state": code_scanning_report}
+    if has_code and not code_scanning_unavailable_private:
+        if cs_state == "configured":
+            codeql_config["mode"] = "default-setup"
+            cs = default_setup or {}
+            suite = cs.get("query_suite")
+            langs = set(cs.get("languages") or [])
+            codeql_config.update(
+                query_suite=suite,
+                languages=sorted(langs),
+                schedule=cs.get("schedule"),
+                updated_at=cs.get("updated_at"),
+            )
+            suite_min = codeql_required_suite or DEFAULT_CODEQL_REQUIRED_QUERY_SUITE
+            if suite and suite not in ACCEPTABLE_CODEQL_SUITES and suite_min != "default":
+                findings.append(
+                    _finding(
+                        "codeql_default_query_suite",
+                        "medium",
+                        park_size,
+                        f"CodeQL default-setup query suite is '{suite}' — enable "
+                        f"'{suite_min}' (or security-extended) for broader coverage",
+                    )
+                )
+            missing = sorted(_codeql_languages_from_paths(paths) - langs)
+            if missing:
+                findings.append(
+                    _finding(
+                        "codeql_language_gap",
+                        "low",
+                        "suggest",
+                        "CodeQL default-setup does not analyze: "
+                        + ", ".join(missing)
+                        + " — enable the language or confirm auto-detection",
+                    )
+                )
+        elif has_codeql_workflow:
+            codeql_config["mode"] = "advanced"
+        for wf in codeql_workflow_paths:
+            wf_state = codeql_workflow_states.get(wf)
+            if wf_state and wf_state != "active":
+                findings.append(
+                    _finding(
+                        "codeql_workflow_disabled",
+                        "medium",
+                        park_size,
+                        f"CodeQL workflow {wf} is {wf_state} — dead config "
+                        "(re-enable it or delete the file)",
+                    )
+                )
+                continue
+            text = _fetch_file_text(owner, repo, wf)
+            if not text or "codeql-action/" not in text:
+                continue
+            push_pr, has_schedule = _workflow_triggers(text)
+            if not push_pr and not has_schedule:
+                findings.append(
+                    _finding(
+                        "codeql_workflow_inert",
+                        "medium",
+                        park_size,
+                        f"CodeQL workflow {wf} has no push/pull_request/schedule "
+                        "trigger — it never runs (workflow_dispatch-only)",
+                    )
+                )
+            elif push_pr and _workflow_excludes_branch(text, branch):
+                findings.append(
+                    _finding(
+                        "codeql_workflow_inert",
+                        "medium",
+                        park_size,
+                        f"CodeQL workflow {wf} branches filter excludes the default "
+                        f"branch '{branch}' — it never scans it",
+                    )
+                )
+            if not _workflow_has_security_events(text):
+                findings.append(
+                    _finding(
+                        "codeql_workflow_no_security_events",
+                        "medium",
+                        park_size,
+                        f"CodeQL workflow {wf} lacks 'permissions: security-events: "
+                        "write' — result upload silently fails",
+                    )
+                )
+            qsuite = _workflow_queries_suite(text)
+            if qsuite in (None, "default"):
+                findings.append(
+                    _finding(
+                        "codeql_workflow_default_queries",
+                        "low",
+                        "suggest",
+                        f"CodeQL workflow {wf} runs the default query suite — add "
+                        "'queries: security-and-quality' (or security-extended)",
+                    )
+                )
+            majors = _codeql_action_majors(text)
+            if majors:
+                findings.append(
+                    _finding(
+                        "codeql_action_major_old",
+                        "low",
+                        park_size,
+                        "CodeQL action pins below v3 (deprecated): "
+                        + ", ".join(f"{s}@{r}" for s, r in majors)
+                        + " — bump to @v3",
+                    )
+                )
+            if _workflow_paths_ignore_all(text):
+                findings.append(
+                    _finding(
+                        "codeql_workflow_paths_ignored",
+                        "medium",
+                        park_size,
+                        f"CodeQL workflow {wf} has a blanket paths-ignore ('**') — "
+                        "push/PR events never analyze anything",
+                    )
+                )
+
     if has_code and not has_workflows and repo not in no_ci_repos:
         findings.append(
             _finding(
@@ -1043,10 +1341,7 @@ def scan_repo_hygiene(
                     unprotected_msg,
                 )
             )
-        elif (
-            not require_reviews
-            and isinstance(branch_protection, dict)
-        ):
+        elif not require_reviews and isinstance(branch_protection, dict):
             reviews = branch_protection.get("required_pull_request_reviews") or {}
             count = reviews.get("required_approving_review_count") or 0
             if count >= 1:
@@ -1267,6 +1562,7 @@ def scan_repo_hygiene(
         "secret_scanning": secret_scan_report,
         "push_protection": push_prot_report,
         "code_scanning_default_setup": code_scanning_report,
+        "code_scanning_config": codeql_config,
         "branch_protection": None if rulesets is None else branch_protection is not None,
         "rulesets": bool(rulesets) if rulesets is not None else None,
         "workflow_permissions": wf_perms,
@@ -1753,6 +2049,7 @@ def main() -> int:
     gitroot = expand(args.gitroot or cfg.get("gitroot") or "~/gitroot")
     out_dir = expand(str(ROOT / (cfg.get("out_dir") or "out")))
     node20_mins = _load_node20_min_majors(cfg)
+    codeql_suite = _load_codeql_suite(cfg)
     branch_cleanup = _load_branch_cleanup_cfg(cfg)
     readme_polish = _load_readme_polish_cfg(cfg)
     branch_protection = _load_branch_protection_cfg(cfg)
@@ -1811,6 +2108,7 @@ def main() -> int:
                     no_ci_repos=no_ci_repos,
                     security_repos=security_repos,
                     owner_is_user=owner_user,
+                    codeql_required_suite=codeql_suite,
                 )
             )
         for pr in scan_prs(owner, name, cfg, archived=is_archived):

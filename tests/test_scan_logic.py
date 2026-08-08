@@ -236,7 +236,6 @@ def test_classify_item():
 
 
 def test_suggest_size():
-    cfg = {}
     assert scan.suggest_size({"classification": "park"}, "pr") == "park"
     assert scan.suggest_size({"classification": "pipeline"}, "issue") == "pipeline"
     assert scan.suggest_size({"classification": "never-merge"}, "pr") == "never-merge"
@@ -275,7 +274,7 @@ def test_classify_finding_verdicts():
 def test_ghas_findings_suggest_on_user_account(monkeypatch):
     """On a User account the GHAS sub-feature toggles are UI-only (no REST API),
     so the findings must be size=suggest with a UI pointer, not fix-direct."""
-    from scan import scan_repo_hygiene
+    scan_repo_hygiene = scan.scan_repo_hygiene
 
     def fake_gh_api_object(path):
         # Minimal repo meta: public, secret scanning enabled (GHAS present).
@@ -322,7 +321,7 @@ def test_ghas_findings_suggest_on_user_account(monkeypatch):
 
 def test_branch_protection_require_reviews_config(monkeypatch):
     """Solo default: flag required reviews; team mode: suggest reviews when unprotected."""
-    from scan import scan_repo_hygiene
+    scan_repo_hygiene = scan.scan_repo_hygiene
 
     protected_with_reviews = {
         "required_pull_request_reviews": {"required_approving_review_count": 1},
@@ -353,9 +352,7 @@ def test_branch_protection_require_reviews_config(monkeypatch):
     monkeypatch.setattr(scan, "_repo_rulesets", lambda *a, **k: [])
     monkeypatch.setattr(scan, "_actions_workflow_permissions", lambda *a, **k: None)
 
-    monkeypatch.setattr(
-        scan, "_default_branch_protection", lambda *a, **k: protected_with_reviews
-    )
+    monkeypatch.setattr(scan, "_default_branch_protection", lambda *a, **k: protected_with_reviews)
     row = scan_repo_hygiene(
         "owner",
         "repo",
@@ -392,3 +389,184 @@ def test_branch_protection_require_reviews_config(monkeypatch):
     assert unprot_team
     assert "required reviews + status checks" in unprot_team[0]["message"]
 
+
+# ---------------------------------------------------------------------------
+# CodeQL deep-check helpers
+# ---------------------------------------------------------------------------
+
+
+def test_codeql_languages_from_paths():
+    paths = [
+        "a.py",
+        "b.py",
+        "c.py",  # python (3 files → included)
+        "x.js",
+        "y.ts",  # javascript-typescript (2 → below floor)
+        "m.go",
+        "n.go",
+        "o.go",
+        "p.go",  # go (4 → included)
+        "q.unknown_ext",
+        "README.md",
+    ]
+    langs = scan._codeql_languages_from_paths(paths)
+    assert langs == {"python", "go"}
+    # floor: a single file of a language is not a gap
+    assert "javascript-typescript" not in langs
+
+
+def test_codeql_languages_floor_configurable():
+    paths = ["only.js", "other.js"]
+    assert scan._codeql_languages_from_paths(paths, min_files=2) == {"javascript-typescript"}
+
+
+def test_workflow_triggers_block_and_shorthand():
+    block = """name: cq
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '31 9 * * 3'
+"""
+    assert scan._workflow_triggers(block) == (True, True)
+    assert scan._workflow_triggers("on: push") == (True, False)
+    assert scan._workflow_triggers("on: workflow_dispatch") == (False, False)
+    assert scan._workflow_triggers("") == (False, False)
+
+
+def test_workflow_excludes_branch_inline_and_block():
+    txt_inline = "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [ main ]\n"
+    assert not scan._workflow_excludes_branch(txt_inline, "main")
+    assert scan._workflow_excludes_branch(txt_inline, "master")
+
+    txt_block = "on:\n  push:\n    branches:\n      - main\n      - dev\n"
+    assert not scan._workflow_excludes_branch(txt_block, "dev")
+    assert scan._workflow_excludes_branch(txt_block, "master")
+
+    txt_ignore = "on:\n  push:\n    branches-ignore: [main, dev]\n"
+    assert scan._workflow_excludes_branch(txt_ignore, "main")
+    assert not scan._workflow_excludes_branch(txt_ignore, "master")
+
+    # no branch filters at all → covers everything
+    assert not scan._workflow_excludes_branch("on: push", "main")
+
+
+def test_workflow_has_security_events():
+    good = "permissions:\n  security-events: write\n  contents: read\n"
+    assert scan._workflow_has_security_events(good)
+    assert not scan._workflow_has_security_events("permissions:\n  contents: read\n")
+    assert not scan._workflow_has_security_events("permissions:\n  # security-events: write\n")
+
+
+def test_workflow_queries_suite():
+    assert scan._workflow_queries_suite("queries: security-and-quality") == "security-and-quality"
+    assert scan._workflow_queries_suite("queries: security-extended,security-and-quality") == (
+        "security-and-quality"
+    )
+    assert scan._workflow_queries_suite("queries: security-extended") == "security-extended"
+    assert scan._workflow_queries_suite("queries: ./custom.ql") == "custom"
+    assert scan._workflow_queries_suite("packs:\n  - codeql/python-queries") == "custom"
+    assert scan._workflow_queries_suite("") is None
+    # commented-out suite line = no suite configured (happycow template case)
+    assert scan._workflow_queries_suite("# queries: security-extended") is None
+    # a literal suite name that is not a known keyword is not "custom"
+    assert scan._workflow_queries_suite("queries: default") == "default"
+
+
+def test_codeql_action_majors():
+    txt = """uses: actions/checkout@v5
+uses: github/codeql-action/init@v2
+uses: github/codeql-action/analyze@v3
+uses: github/codeql-action/init@v1.2.3
+"""
+    majors = scan._codeql_action_majors(txt)
+    assert ("init", "v2") in majors
+    assert ("init", "v1.2.3") in majors
+    assert not any(s == "analyze" for s, _ in majors)
+
+
+def test_workflow_paths_ignore_all():
+    assert scan._workflow_paths_ignore_all("paths-ignore: ['**']")
+    assert scan._workflow_paths_ignore_all("paths-ignore:\n  - '**'\n  - docs/**")
+    assert not scan._workflow_paths_ignore_all("paths-ignore: ['docs/**', 'tests/**']")
+    assert not scan._workflow_paths_ignore_all("paths: ['src/**']")
+
+
+def test_load_codeql_suite():
+    assert scan._load_codeql_suite(None) == "security-and-quality"
+    assert scan._load_codeql_suite({"codeql": {"required_query_suite": "security-extended"}}) == (
+        "security-extended"
+    )
+    assert scan._load_codeql_suite({"codeql": {"required_query_suite": "default"}}) == "default"
+    assert scan._load_codeql_suite({"codeql": {"other": 1}}) == "security-and-quality"
+
+
+def _hygiene_row(monkeypatch, default_setup_state, no_ci=()):
+    """Drive scan_repo_hygiene with mocked gh; return the row dict."""
+    scan_repo_hygiene = scan.scan_repo_hygiene
+
+    def fake_gh_api_object(path):
+        if path.endswith("/code-scanning/default-setup"):
+            if default_setup_state == "configured":
+                return {
+                    "state": "configured",
+                    "query_suite": "default",
+                    "languages": ["python"],
+                    "schedule": "weekly",
+                    "updated_at": "2026-08-08T00:00:00Z",
+                }, None
+            return {"state": "not-configured"}, None
+        if path.endswith("/actions/workflows"):
+            return {"workflows": []}, None
+        if path.startswith("repos/"):
+            return {
+                "fork": False,
+                "archived": False,
+                "private": False,
+                "default_branch": "main",
+                "security_and_analysis": {
+                    "secret_scanning": {"status": "enabled"},
+                    "secret_scanning_push_protection": {"status": "enabled"},
+                },
+            }, None
+        return None, "unavailable"
+
+    monkeypatch.setattr(scan, "gh_api_object", fake_gh_api_object)
+    monkeypatch.setattr(scan, "gh_api", lambda *a, **k: ([], None))
+    monkeypatch.setattr(scan, "gh_api_status", lambda *a, **k: 204)
+    monkeypatch.setattr(scan, "_repo_tree_paths", lambda *a, **k: ["main.py", "x.py", "y.py"])
+    monkeypatch.setattr(scan, "_detect_ecosystems", lambda p: {"pip"})
+    monkeypatch.setattr(scan, "_default_branch_protection", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "_repo_rulesets", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "_actions_workflow_permissions", lambda *a, **k: None)
+    return scan_repo_hygiene("owner", "repo", no_ci_repos=set(no_ci))
+
+
+def test_code_scanning_not_configured_fires_when_code_present(monkeypatch):
+    row = _hygiene_row(monkeypatch, "not-configured")
+    ids = {f["id"] for f in row["findings"]}
+    assert "code_scanning_not_configured" in ids
+
+
+def test_codeql_default_query_suite_emitted_for_weak_suite(monkeypatch):
+    row = _hygiene_row(monkeypatch, "configured")
+    by_id = {f["id"]: f for f in row["findings"]}
+    assert "codeql_default_query_suite" in by_id
+    assert by_id["codeql_default_query_suite"]["severity"] == "medium"
+    assert by_id["codeql_default_query_suite"]["size"] == "fix-direct"
+    cfg = row["code_scanning_config"]
+    assert cfg["mode"] == "default-setup"
+    assert cfg["query_suite"] == "default"
+    assert cfg["languages"] == ["python"]
+
+
+def test_codeql_suite_check_disabled_via_config(monkeypatch):
+    # Mocks stay active from _hygiene_row — call with the config-disabled value.
+    _hygiene_row(monkeypatch, "configured")
+    row_off = scan.scan_repo_hygiene(
+        "owner",
+        "repo",
+        codeql_required_suite="default",
+    )
+    ids = {f["id"] for f in row_off["findings"]}
+    assert "codeql_default_query_suite" not in ids
