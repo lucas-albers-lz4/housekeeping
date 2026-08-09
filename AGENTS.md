@@ -70,7 +70,8 @@ tool.
    `never_merge_labels` (e.g. `miner-eval`). Never delete remote branches
    from `stale_merged_branches` / suggest-only findings without an explicit ask.
    `readme_badges_thin` / `about_metadata_thin` are also suggest-only (no auto
-   README/About edits).
+   README/About edits). Never commit secrets or paste secret-scanning
+   payloads into chat/canvas.
 10. **Settings changes need explicit approval + verification.** Enabling repo
     settings (branch protection, Dependabot, code scanning) is a write action —
     batch only after the user says so, and re-query each setting after applying.
@@ -79,6 +80,14 @@ tool.
     (see the findings table). See
     `.cursor/skills/housekeeping/reference.md` → "Batch-applying settings" for
     the guardrails that prevent solo-owner lockout and bricked merges.
+11. **Never merge a PR without explicit user approval** — your own fix PRs
+    included. Open the PR, report it, and wait for the user to approve the
+    merge. The only exception: green Dependabot group PRs merged as part of an
+    already-approved `batch-pr` pass (per the size playbook).
+12. **The scan reflects the default branch only.** Fixes on an open PR branch
+    still show as `needs-work` until the PR is merged — do not re-open or
+    double-fix findings already covered by an open PR; say "clears on merge"
+    and move on.
 
 ## Commands
 
