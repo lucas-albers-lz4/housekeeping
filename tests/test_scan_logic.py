@@ -609,3 +609,18 @@ def test_workflow_branch_glob_semantics():
     )
     # glob in block form too
     assert not scan._workflow_excludes_branch("on:\n  push:\n    branches:\n      - '**'\n", "main")
+
+
+def test_badge_url_hosts_exact_netloc():
+    blob = "[![pypi](https://pypi.org/project/x/)] [![evil](https://evilpypi.org/x)]"
+    hosts = scan._badge_url_hosts(blob)
+    # Set membership is exact — a spoofed hostname never satisfies the check.
+    assert "pypi.org" in hosts
+    assert "evilpypi.org" in hosts
+    assert "evilpypi.org" != "pypi.org"  # substring spoofing is defeated
+    # a blob with ONLY the spoofed host does not pass the pypi check
+    assert "pypi.org" not in scan._badge_url_hosts("https://evilpypi.org/x")
+    assert scan._badge_url_hosts("no url here") == set()
+    assert scan._badge_url_hosts("https://img.shields.io/badge/license-MIT-blue") == {
+        "img.shields.io"
+    }

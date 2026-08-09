@@ -18,6 +18,7 @@ import sys
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config.toml"
@@ -609,6 +610,21 @@ def _readme_badge_blobs(text: str) -> list[str]:
     return blobs
 
 
+def _badge_url_hosts(blob: str) -> set[str]:
+    """Exact lowercased hosts of http(s) URLs inside a badge blob.
+
+    Hostname-substring checks ("pypi.org" in blob) are spoofable
+    (evilpypi.org) — compare netloc exactly instead.
+    """
+    hosts: set[str] = set()
+    for m in re.finditer(r"https?://([^/\s\"'<>]+)", blob):
+        try:
+            hosts.add(urlparse("https://" + m.group(1)).netloc.lower())
+        except ValueError:
+            continue
+    return hosts
+
+
 def _blob_is_license_badge(blob: str) -> bool:
     """True if blob looks like a license badge (not a workflow named license-*)."""
     # Actions / workflow status badges are CI, even if the workflow name mentions license.
@@ -616,7 +632,7 @@ def _blob_is_license_badge(blob: str) -> bool:
         return False
     if "badge/license" in blob:
         return True
-    if "img.shields.io" in blob and re.search(r"\blicense\b", blob):
+    if "img.shields.io" in _badge_url_hosts(blob) and re.search(r"\blicense\b", blob):
         return True
     # Markdown/HTML alt text precedes the URL.
     alt = blob.split("http", 1)[0]
@@ -635,14 +651,16 @@ def _badge_categories_present(blobs: list[str]) -> set[str]:
             found.add("ci")
         if _blob_is_license_badge(blob):
             found.add("license")
+        hosts = _badge_url_hosts(blob)
         if (
-            "pypi.org" in blob
-            or "pypi/" in blob
-            or "npmjs.com" in blob
-            or "/npm/" in blob
-            or "crates.io" in blob
-            or "crates/" in blob
+            "pypi.org" in hosts
+            or "pypi.io" in hosts
+            or "npmjs.com" in hosts
+            or "crates.io" in hosts
             or "badge/pypi" in blob
+            or "pypi/" in blob
+            or "/npm/" in blob
+            or "crates/" in blob
         ):
             found.add("package")
     return found
