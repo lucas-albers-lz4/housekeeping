@@ -610,6 +610,14 @@ def _readme_badge_blobs(text: str) -> list[str]:
     return blobs
 
 
+# Exact hosts only — never use `"host" in url_string` (CodeQL
+# py/incomplete-url-substring-sanitization; spoofable via evilpypi.org).
+_SHIELDS_HOST = "img.shields.io"
+_PACKAGE_REGISTRY_HOSTS = frozenset(
+    {"pypi.org", "pypi.io", "npmjs.com", "crates.io"}
+)
+
+
 def _badge_url_hosts(blob: str) -> set[str]:
     """Exact lowercased hosts of http(s) URLs inside a badge blob.
 
@@ -625,6 +633,15 @@ def _badge_url_hosts(blob: str) -> set[str]:
     return hosts
 
 
+def _hosts_equal_any(hosts: set[str], wanted: frozenset[str] | set[str]) -> bool:
+    """True if any parsed host equals a wanted host (not substring)."""
+    for host in hosts:
+        for candidate in wanted:
+            if host == candidate:
+                return True
+    return False
+
+
 def _blob_is_license_badge(blob: str) -> bool:
     """True if blob looks like a license badge (not a workflow named license-*)."""
     # Actions / workflow status badges are CI, even if the workflow name mentions license.
@@ -632,7 +649,9 @@ def _blob_is_license_badge(blob: str) -> bool:
         return False
     if "badge/license" in blob:
         return True
-    if "img.shields.io" in _badge_url_hosts(blob) and re.search(r"\blicense\b", blob):
+    if _hosts_equal_any(_badge_url_hosts(blob), {_SHIELDS_HOST}) and re.search(
+        r"\blicense\b", blob
+    ):
         return True
     # Markdown/HTML alt text precedes the URL.
     alt = blob.split("http", 1)[0]
@@ -652,12 +671,8 @@ def _badge_categories_present(blobs: list[str]) -> set[str]:
         if _blob_is_license_badge(blob):
             found.add("license")
         hosts = _badge_url_hosts(blob)
-        if (
-            "pypi.org" in hosts
-            or "pypi.io" in hosts
-            or "npmjs.com" in hosts
-            or "crates.io" in hosts
-            or "badge/pypi" in blob
+        if _hosts_equal_any(hosts, _PACKAGE_REGISTRY_HOSTS) or (
+            "badge/pypi" in blob
             or "pypi/" in blob
             or "/npm/" in blob
             or "crates/" in blob

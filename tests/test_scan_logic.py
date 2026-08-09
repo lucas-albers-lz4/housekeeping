@@ -614,12 +614,13 @@ def test_workflow_branch_glob_semantics():
 def test_badge_url_hosts_exact_netloc():
     blob = "[![pypi](https://pypi.org/project/x/)] [![evil](https://evilpypi.org/x)]"
     hosts = scan._badge_url_hosts(blob)
-    # Set membership is exact — a spoofed hostname never satisfies the check.
-    assert "pypi.org" in hosts
-    assert "evilpypi.org" in hosts
-    assert "evilpypi.org" != "pypi.org"  # substring spoofing is defeated
-    # a blob with ONLY the spoofed host does not pass the pypi check
-    assert "pypi.org" not in scan._badge_url_hosts("https://evilpypi.org/x")
+    # Equality / subset — never `"host" in url` (CodeQL substring rule).
+    assert {"pypi.org", "evilpypi.org"} <= hosts
+    assert not ({"pypi.org"} <= scan._badge_url_hosts("https://evilpypi.org/x"))
+    assert scan._hosts_equal_any(hosts, {"pypi.org"})
+    assert not scan._hosts_equal_any(
+        scan._badge_url_hosts("https://evilpypi.org/x"), {"pypi.org"}
+    )
     assert scan._badge_url_hosts("no url here") == set()
     assert scan._badge_url_hosts("https://img.shields.io/badge/license-MIT-blue") == {
         "img.shields.io"
