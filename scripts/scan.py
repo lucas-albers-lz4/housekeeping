@@ -18,6 +18,7 @@ import sys
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config.toml"
@@ -609,6 +610,38 @@ def _readme_badge_blobs(text: str) -> list[str]:
     return blobs
 
 
+# Exact hosts only — never use `"host" in url_string` (CodeQL
+# py/incomplete-url-substring-sanitization; spoofable via evilpypi.org).
+_SHIELDS_HOST = "img.shields.io"
+_PACKAGE_REGISTRY_HOSTS = frozenset(
+    {"pypi.org", "pypi.io", "npmjs.com", "crates.io"}
+)
+
+
+def _badge_url_hosts(blob: str) -> set[str]:
+    """Exact lowercased hosts of http(s) URLs inside a badge blob.
+
+    Hostname-substring checks ("pypi.org" in blob) are spoofable
+    (evilpypi.org) — compare netloc exactly instead.
+    """
+    hosts: set[str] = set()
+    for m in re.finditer(r"https?://([^/\s\"'<>]+)", blob):
+        try:
+            hosts.add(urlparse("https://" + m.group(1)).netloc.lower())
+        except ValueError:
+            continue
+    return hosts
+
+
+def _hosts_equal_any(hosts: set[str], wanted: frozenset[str] | set[str]) -> bool:
+    """True if any parsed host equals a wanted host (not substring)."""
+    for host in hosts:
+        for candidate in wanted:
+            if host == candidate:
+                return True
+    return False
+
+
 def _blob_is_license_badge(blob: str) -> bool:
     """True if blob looks like a license badge (not a workflow named license-*)."""
     # Actions / workflow status badges are CI, even if the workflow name mentions license.
@@ -616,7 +649,9 @@ def _blob_is_license_badge(blob: str) -> bool:
         return False
     if "badge/license" in blob:
         return True
-    if "img.shields.io" in blob and re.search(r"\blicense\b", blob):
+    if _hosts_equal_any(_badge_url_hosts(blob), {_SHIELDS_HOST}) and re.search(
+        r"\blicense\b", blob
+    ):
         return True
     # Markdown/HTML alt text precedes the URL.
     alt = blob.split("http", 1)[0]
@@ -635,14 +670,12 @@ def _badge_categories_present(blobs: list[str]) -> set[str]:
             found.add("ci")
         if _blob_is_license_badge(blob):
             found.add("license")
-        if (
-            "pypi.org" in blob
+        hosts = _badge_url_hosts(blob)
+        if _hosts_equal_any(hosts, _PACKAGE_REGISTRY_HOSTS) or (
+            "badge/pypi" in blob
             or "pypi/" in blob
-            or "npmjs.com" in blob
             or "/npm/" in blob
-            or "crates.io" in blob
             or "crates/" in blob
-            or "badge/pypi" in blob
         ):
             found.add("package")
     return found

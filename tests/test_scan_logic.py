@@ -609,3 +609,19 @@ def test_workflow_branch_glob_semantics():
     )
     # glob in block form too
     assert not scan._workflow_excludes_branch("on:\n  push:\n    branches:\n      - '**'\n", "main")
+
+
+def test_badge_url_hosts_exact_netloc():
+    blob = "[![pypi](https://pypi.org/project/x/)] [![evil](https://evilpypi.org/x)]"
+    hosts = scan._badge_url_hosts(blob)
+    # Equality / subset — never `"host" in url` (CodeQL substring rule).
+    assert {"pypi.org", "evilpypi.org"} <= hosts
+    assert not ({"pypi.org"} <= scan._badge_url_hosts("https://evilpypi.org/x"))
+    assert scan._hosts_equal_any(hosts, {"pypi.org"})
+    assert not scan._hosts_equal_any(
+        scan._badge_url_hosts("https://evilpypi.org/x"), {"pypi.org"}
+    )
+    assert scan._badge_url_hosts("no url here") == set()
+    assert scan._badge_url_hosts("https://img.shields.io/badge/license-MIT-blue") == {
+        "img.shields.io"
+    }
