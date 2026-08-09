@@ -192,6 +192,20 @@ Config: `[branch_protection] require_approving_reviews` in `config.toml`
 - Safe baseline for solo repos: protection with force-push/deletion blocked +
   `enforce_admins: false` + **no** required approving reviews; no required
   status checks until CI-on-PR is confirmed.
+
+### UI-only toggles (no REST endpoint — manual step)
+
+`secret_scanning_off`, `push_protection_off`, `secret_validity_checks_off`,
+`secret_nonprovider_patterns_off` cannot be fixed by this toolkit:
+
+- **No API path exists.** Verified against the current OpenAPI description:
+  no repo-level endpoint accepts these fields; the old
+  `PATCH /repos/{o}/{r}/security-and-analysis` is gone from the spec; the
+  only writable code-security configuration endpoints are org/enterprise —
+  unavailable for User accounts.
+- **Manual per repo:** Settings → Code security → Secret scanning / Push
+  protection (public repos don't need GHAS for these). Flag the exact repo
+  list to the user as a manual step; do not attempt API writes (they 404).
 - Private repos without GitHub Pro: the branch-protection and rulesets APIs
   return **403** (`Upgrade to GitHub Pro or make this repository public`).
   Report `branch_protection: null` (unknown) and do **not** emit a finding —

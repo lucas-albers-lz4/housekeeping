@@ -92,7 +92,11 @@ Details: [reference.md](reference.md).
 - Do **not** delete remote branches from `stale_merged_branches` / suggest-only
   findings unless the user explicitly asks (and confirm the branch list first).
 - Do not commit secrets; do not paste secret-scanning payloads into chat/canvas.
-- Prefer merging green Dependabot PRs over hand-editing lockfiles when possible.
+- **Never merge a PR without explicit user approval** (your own fix PRs
+  included) — open it, report it, wait. Exception: green Dependabot group
+  PRs merged inside an already-approved `batch-pr` pass.
+- Prefer merging green Dependabot PRs over hand-editing lockfiles when
+  possible (within an approved `batch-pr` pass).
 - After picking a target repo: update its working copy (`git fetch`/`pull` as
   needed), then `move_agent_to_root` before edits.
 - For canvases: put triage boards under this project’s `canvases/` only when the
