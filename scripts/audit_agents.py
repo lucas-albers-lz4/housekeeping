@@ -206,11 +206,24 @@ def _git_ls_tree(checkout: Path) -> list[tuple[str, str]]:
     return rows
 
 
+def _working_tree_blob_sha(checkout: Path, rel: str, text: str) -> str:
+    """Blob SHA of the working-tree file so fingerprints track dirty edits."""
+    p = subprocess.run(
+        ["git", "-C", str(checkout), "hash-object", "--", rel],
+        capture_output=True,
+        text=True,
+    )
+    sha = (p.stdout or "").strip()
+    if p.returncode == 0 and sha:
+        return sha
+    return hashlib.sha256(text.encode()).hexdigest()[:40]
+
+
 def _inventory_local(checkout: Path) -> list[dict]:
     files: list[dict] = []
     tree = _git_ls_tree(checkout)
     if tree:
-        for sha, path in tree:
+        for _sha, path in tree:
             kind = classify_path(path)
             if not kind:
                 continue
@@ -223,7 +236,7 @@ def _inventory_local(checkout: Path) -> list[dict]:
                 {
                     "path": path,
                     "kind": kind,
-                    "sha": sha,
+                    "sha": _working_tree_blob_sha(checkout, path, text),
                     "lines": _line_count(text),
                     "text": text,
                 }
@@ -259,6 +272,8 @@ def _repo_tree_blobs(owner: str, repo: str, branch: str) -> list[tuple[str, str]
     """Blob (sha, path) pairs, or None if the tree API call failed."""
     data, err = scan.gh_api_object(f"repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
     if data is None or err:
+        return None
+    if data.get("truncated"):
         return None
     out: list[tuple[str, str]] = []
     for t in data.get("tree") or []:
@@ -548,16 +563,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
         return code
 
+    write_cache(cache_path, cache)
+    save_ok = True
     if args.save:
         try:
             apply_save(cache, report, args.save)
+            write_cache(cache_path, cache)
         except (OSError, json.JSONDecodeError, ValueError) as e:
             print(f"error: --save failed: {e}", file=sys.stderr)
-            return 2
+            save_ok = False
 
-    write_cache(cache_path, cache)
     print(json.dumps(report, indent=2))
-    return 0
+    return 0 if save_ok else 2
 
 
 if __name__ == "__main__":

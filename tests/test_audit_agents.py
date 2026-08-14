@@ -6,6 +6,7 @@ No network, no `gh` mocking — classify / fingerprint / notes / argparse only.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -263,3 +264,19 @@ def test_inventory_error_does_not_look_empty(tmp_path: Path, monkeypatch):
     assert code == 2
     assert report["error"] == "inventory failed"
     assert "repos" not in report or "fwlive" not in str(report.get("repos"))
+
+
+def test_local_fingerprint_tracks_dirty_working_tree(tmp_path: Path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "AGENTS.md").write_text("one\n")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "i"], cwd=repo, check=True, capture_output=True)
+    clean = aa._inventory_local(repo)
+    (repo / "AGENTS.md").write_text("one\ntwo\n")
+    dirty = aa._inventory_local(repo)
+    assert aa.fingerprint(clean) != aa.fingerprint(dirty)
+    assert dirty[0]["lines"] == 2
