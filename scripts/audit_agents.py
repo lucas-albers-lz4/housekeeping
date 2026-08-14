@@ -185,25 +185,31 @@ def _strip_texts(files: list[dict]) -> list[dict]:
     return out
 
 
-def _git_ls_tree(checkout: Path) -> list[tuple[str, str]]:
-    """Return (sha, path) pairs from HEAD, or empty if not a git repo."""
+def _git_worktree_paths(checkout: Path) -> list[str]:
+    """Tracked + non-ignored untracked paths still present on disk."""
     p = subprocess.run(
-        ["git", "-C", str(checkout), "ls-tree", "-r", "HEAD"],
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
         capture_output=True,
-        text=True,
     )
     if p.returncode != 0:
         return []
-    rows: list[tuple[str, str]] = []
-    for line in p.stdout.splitlines():
-        # <mode> <type> <sha>\t<path>
-        try:
-            meta, path = line.split("\t", 1)
-            sha = meta.split()[2]
-        except (ValueError, IndexError):
+    paths: list[str] = []
+    for raw in p.stdout.split(b"\0"):
+        if not raw:
             continue
-        rows.append((sha, path))
-    return rows
+        rel = raw.decode("utf-8", errors="replace")
+        if (checkout / rel).is_file():
+            paths.append(rel)
+    return paths
 
 
 def _working_tree_blob_sha(checkout: Path, rel: str, text: str) -> str:
@@ -221,9 +227,9 @@ def _working_tree_blob_sha(checkout: Path, rel: str, text: str) -> str:
 
 def _inventory_local(checkout: Path) -> list[dict]:
     files: list[dict] = []
-    tree = _git_ls_tree(checkout)
-    if tree:
-        for _sha, path in tree:
+    paths = _git_worktree_paths(checkout)
+    if paths:
+        for path in paths:
             kind = classify_path(path)
             if not kind:
                 continue

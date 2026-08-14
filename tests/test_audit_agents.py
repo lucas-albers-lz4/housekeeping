@@ -280,3 +280,19 @@ def test_local_fingerprint_tracks_dirty_working_tree(tmp_path: Path):
     dirty = aa._inventory_local(repo)
     assert aa.fingerprint(clean) != aa.fingerprint(dirty)
     assert dirty[0]["lines"] == 2
+
+
+def test_local_inventory_includes_untracked_instruction_files(tmp_path: Path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("hi\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "i"], cwd=repo, check=True, capture_output=True)
+    (repo / "AGENTS.md").write_text("- local only\n")
+    files = aa._inventory_local(repo)
+    paths = {f["path"] for f in files}
+    assert "AGENTS.md" in paths
+    assert any(f["kind"] == "agents_root" for f in files)
