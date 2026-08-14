@@ -25,6 +25,7 @@ import scan  # noqa: E402
 
 SKILL_VERSION = "1"
 DEFAULT_LINE_BUDGET = 40
+RUNBOOK_LINE_BAND = 100
 DEFAULT_CACHE = ROOT / "out" / "agents-md-cache.json"
 DUPLICATE_RATIO = 0.8
 
@@ -135,14 +136,26 @@ def mechanical_notes(
     for f in files:
         if f.get("kind") == "agents_root" and repo not in long_form:
             lines = int(f.get("lines") or 0)
-            if lines > line_budget:
+            if lines > RUNBOOK_LINE_BAND:
                 notes.append(
                     {
-                        "id": "agents_md_over_budget",
+                        "id": "agents_md_runbook_likely",
                         "size": "suggest",
                         "message": (
-                            f"Root AGENTS.md is {lines} lines "
-                            f"(budget {line_budget}; not in long_form_repos)"
+                            f"Root AGENTS.md is {lines} lines (>{RUNBOOK_LINE_BAND}). "
+                            "Probably docs/spec/runbook — classify role and decide "
+                            "scope-fit; do not auto-split or trim to a line target"
+                        ),
+                    }
+                )
+            elif lines > line_budget:
+                notes.append(
+                    {
+                        "id": "agents_md_length_band",
+                        "size": "suggest",
+                        "message": (
+                            f"Root AGENTS.md is {lines} lines (>{line_budget}). "
+                            "Classify role before treating as bloat"
                         ),
                     }
                 )
@@ -414,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--line-budget",
         type=int,
         default=DEFAULT_LINE_BUDGET,
-        help="Root AGENTS.md line budget (skipped for long_form_repos)",
+        help="Root AGENTS.md length-band cut (default 40; skipped for long_form_repos)",
     )
     return ap
 
