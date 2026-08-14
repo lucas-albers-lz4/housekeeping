@@ -427,7 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--line-budget",
         type=int,
         default=DEFAULT_LINE_BUDGET,
-        help="Root AGENTS.md length-band cut (default 40; skipped for long_form_repos)",
+        help=(
+            "Line count that starts agents_md_length_band (default 40; "
+            "skipped for long_form_repos). A pager, not a trim target"
+        ),
     )
     return ap
 
