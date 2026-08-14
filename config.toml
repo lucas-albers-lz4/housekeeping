@@ -108,3 +108,12 @@ require_approving_reviews = false
 # file (github-codeql-config-file repo property) — raise the floor accordingly.
 [codeql]
 required_query_suite = "extended"
+
+# Opt-in only — scan.py never reads this. Long-form root AGENTS.md is OK
+# (operator toolkit / the file is the product).
+[instruction_audit]
+long_form_repos = [
+  "housekeeping",
+  "little-coder",
+  "sre-ai-llm-work",
+]
