@@ -151,14 +151,27 @@ Template:
 - <What to remember and where.>
 ```
 
+## Role first
+
+Classify the file before judging length. Length is a pager, not a defect.
+
+- **Brownfield delta** — non-obvious hazards only; target ~20 lines.
+- **Task router** — task → pointer / “read X before Y”; extra lines may be an index.
+- **Hazard list** — imperatives, paths, forbiddens; width of the task surface, not bloat.
+- **Toolkit / product-is-the-file** — `long_form_repos`; no mechanical length note.
+- **Runbook in AGENTS.md** — workflow/decision tree copied into the root file; decide scope-fit (split vs leave vs short router). Do not auto-split.
+- **Greenfield / founder prose** — longer prose is valid when it carries intent the code cannot yet.
+
+Then apply length *expectations*. Non-verbosity (rubric /4) is independent of line count: a 68-line router can score well; a 25-line stack summary can score poorly.
+
 ## Length defaults
 
 - Nested local file: 1–10 lines.
 - Normal repo/brownfield root: up to ~20 lines.
 - Greenfield/founder note: may be longer if it carries product intent.
-- Personal/global / operator-toolkit file: may be longer.
-- Over ~40 lines for a normal repo: suspicious; trim hard (mechanical note `agents_md_over_budget` unless `long_form_repos`).
-- Over ~100 lines: probably docs/spec/runbook content.
+- Personal/global / operator-toolkit file: may be longer (`long_form_repos` skips mechanical notes).
+- Over ~40 lines (not long-form): mechanical `agents_md_length_band` — classify role before treating as bloat.
+- Over ~100 lines (not long-form): mechanical `agents_md_runbook_likely` only (highest band) — probably docs/spec/runbook; decide scope-fit.
 
 ## Compression moves
 
@@ -176,12 +189,13 @@ Score out of 20:
 1. Local specificity / 5 — unique to this repo/folder/person.
 2. Actionability / 5 — commands, paths, boundaries, forbidden moves, or clear intent.
 3. Non-verbosity / 4 — compact rules; no prose unless prose carries intent.
+   Independent of line count (do not deduct solely for exceeding 40).
 4. Source-of-truth hygiene / 3 — links or points instead of duplicating docs/code.
 5. Scope fit / 3 — repo, nested, greenfield, brownfield, personal, or toolkit style matches the file.
 
 ## Skills and Cursor rules
 
-Do not apply the brownfield ~20-line AGENTS.md cap to `SKILL.md` or `.cursor/rules`. Review those for:
+Do not apply brownfield AGENTS.md length expectations to `SKILL.md` or `.cursor/rules`. Review those for:
 
 - YAML frontmatter (`name` / `description` / `globs` / `alwaysApply` as appropriate)
 - clear load triggers (skills) or glob/always-on scope (rules)

@@ -39,7 +39,7 @@ all owned repos as targets.
    not re-read the files unless the user asks to refresh.
 4. On a **cache miss**, read only the listed instruction files. Score with
    [reference.md](reference.md). Skills and Cursor rules are **not** scored
-   with the brownfield ~20-line AGENTS.md budget (skills may be long; check
+   with brownfield AGENTS.md length expectations (skills may be long; check
    frontmatter, triggers, and duplication of root AGENTS.md instead).
 5. Repos in `[instruction_audit] long_form_repos` may keep a long root
    `AGENTS.md` (operator toolkit / the file is the product).
@@ -55,8 +55,11 @@ all owned repos as targets.
   pointer. List as suggest-only; never auto-write a stub.
 - `claude_md_duplicate`: `CLAUDE.md` is a near-copy of `AGENTS.md` instead of
   a thin pointer.
-- `agents_md_over_budget`: root `AGENTS.md` over 40 lines, unless the repo is
-  in `long_form_repos`.
+- `agents_md_length_band`: root `AGENTS.md` over 40 lines (unless
+  `long_form_repos`). Classify role before treating as bloat; do not auto-trim.
+- `agents_md_runbook_likely`: root `AGENTS.md` over 100 lines (unless
+  `long_form_repos`). Probably docs/spec/runbook — decide scope-fit; do not
+  auto-split. Highest band only (not both notes).
 
 ## Output
 

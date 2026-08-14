@@ -107,20 +107,36 @@ def test_routing_gap_only_with_rules_or_skills_and_no_root():
     assert not any(n["id"] == "routing_gap" for n in notes3)
 
 
-def test_long_form_skips_line_budget():
-    bloated = [
-        {
-            "path": "AGENTS.md",
-            "kind": "agents_root",
-            "sha": "x",
-            "lines": 122,
-            "text": "x\n" * 122,
-        }
-    ]
-    over = aa.mechanical_notes(bloated, "housekeeping", long_form_repos=set())
-    assert any(n["id"] == "agents_md_over_budget" for n in over)
-    skipped = aa.mechanical_notes(bloated, "housekeeping", long_form_repos={"housekeeping"})
-    assert not any(n["id"] == "agents_md_over_budget" for n in skipped)
+def test_length_bands_highest_only_and_long_form_skip():
+    def root(lines: int) -> list[dict]:
+        return [
+            {
+                "path": "AGENTS.md",
+                "kind": "agents_root",
+                "sha": "x",
+                "lines": lines,
+                "text": "x\n" * lines,
+            }
+        ]
+
+    ids40 = {n["id"] for n in aa.mechanical_notes(root(40), "fwlive")}
+    assert "agents_md_length_band" not in ids40
+    ids41 = {n["id"] for n in aa.mechanical_notes(root(41), "fwlive")}
+    assert "agents_md_length_band" in ids41
+
+    ids61 = {n["id"] for n in aa.mechanical_notes(root(61), "fwlive")}
+    assert "agents_md_length_band" in ids61
+    assert "agents_md_runbook_likely" not in ids61
+    assert "agents_md_over_budget" not in ids61
+
+    ids202 = {n["id"] for n in aa.mechanical_notes(root(202), "regexproof")}
+    assert "agents_md_runbook_likely" in ids202
+    assert "agents_md_length_band" not in ids202
+
+    skipped = aa.mechanical_notes(root(202), "housekeeping", long_form_repos={"housekeeping"})
+    assert not any(
+        n["id"] in {"agents_md_length_band", "agents_md_runbook_likely"} for n in skipped
+    )
 
 
 def test_claude_duplicate_note():
