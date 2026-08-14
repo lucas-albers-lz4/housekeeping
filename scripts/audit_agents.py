@@ -31,6 +31,14 @@ DUPLICATE_RATIO = 0.8
 ROUTE_KINDS = frozenset({"cursor_rule", "cursorrules", "cursor_skill", "claude_skill"})
 
 
+class InventoryError(Exception):
+    """Remote tree fetch failed; must not look like an empty surface."""
+
+
+def cache_key(owner: str, repo: str) -> str:
+    return f"{owner}/{repo}"
+
+
 def parse_repo_list(raw: str | None) -> list[str]:
     if not raw or not str(raw).strip():
         return []
@@ -149,6 +157,21 @@ def mechanical_notes(
     return notes
 
 
+def owner_login_matches(owner: str, repo_json: dict) -> bool:
+    login = (repo_json.get("owner") or {}).get("login") or ""
+    return bool(login) and login.lower() == owner.lower()
+
+
+def repo_is_under_owner(owner: str, repo: str) -> tuple[bool, dict | None]:
+    """True if GET repos/{owner}/{repo} exists and belongs to owner (no 200-cap list)."""
+    data, _err = scan.gh_api_object(f"repos/{owner}/{repo}")
+    if not isinstance(data, dict):
+        return False, None
+    if not owner_login_matches(owner, data):
+        return False, None
+    return True, data
+
+
 def assert_repos_in_owner(requested: list[str], owned: set[str]) -> list[str]:
     """Return names outside owned. Empty means ok."""
     return [n for n in requested if n not in owned]
@@ -232,10 +255,11 @@ def _inventory_local(checkout: Path) -> list[dict]:
     return files
 
 
-def _repo_tree_blobs(owner: str, repo: str, branch: str) -> list[tuple[str, str]]:
+def _repo_tree_blobs(owner: str, repo: str, branch: str) -> list[tuple[str, str]] | None:
+    """Blob (sha, path) pairs, or None if the tree API call failed."""
     data, err = scan.gh_api_object(f"repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
     if data is None or err:
-        return []
+        return None
     out: list[tuple[str, str]] = []
     for t in data.get("tree") or []:
         if t.get("type") != "blob":
@@ -248,8 +272,11 @@ def _repo_tree_blobs(owner: str, repo: str, branch: str) -> list[tuple[str, str]
 
 
 def _inventory_github(owner: str, repo: str, branch: str) -> list[dict]:
+    blobs = _repo_tree_blobs(owner, repo, branch)
+    if blobs is None:
+        raise InventoryError(f"failed to fetch git tree for {owner}/{repo}@{branch}")
     files: list[dict] = []
-    for sha, path in _repo_tree_blobs(owner, repo, branch):
+    for sha, path in blobs:
         kind = classify_path(path)
         if not kind:
             continue
@@ -303,8 +330,10 @@ def write_cache(path: Path, cache: dict) -> None:
     path.write_text(json.dumps(cache, indent=2) + "\n", encoding="utf-8")
 
 
-def cache_hit(entry: dict | None, fp: str) -> dict | None:
+def cache_hit(entry: dict | None, fp: str, owner: str | None = None) -> dict | None:
     if not entry:
+        return None
+    if owner is not None and entry.get("owner") != owner:
         return None
     if entry.get("skill_version") != SKILL_VERSION:
         return None
@@ -392,11 +421,20 @@ def audit_named_repos(
     cache_repos = cache.setdefault("repos", {})
     results = []
     for name in names:
-        files = inventory_repo(owner, name, gitroot, meta_map.get(name))
+        try:
+            files = inventory_repo(owner, name, gitroot, meta_map.get(name))
+        except InventoryError as e:
+            return 2, {
+                "error": "inventory failed",
+                "owner": owner,
+                "repo": name,
+                "detail": str(e),
+            }
         fp = fingerprint(files)
         notes = mechanical_notes(files, name, long_form_repos, line_budget)
-        prior = cache_repos.get(name) if isinstance(cache_repos.get(name), dict) else None
-        hit = cache_hit(prior, fp)
+        key = cache_key(owner, name)
+        prior = cache_repos.get(key) if isinstance(cache_repos.get(key), dict) else None
+        hit = cache_hit(prior, fp, owner=owner)
         row = {
             "repo": name,
             "fingerprint": fp,
@@ -419,7 +457,7 @@ def audit_named_repos(
         }
         if hit:
             entry["audit"] = hit
-        cache_repos[name] = entry
+        cache_repos[key] = entry
 
     report = {
         "scanned_at": datetime.now(UTC).isoformat(),
@@ -440,12 +478,13 @@ def apply_save(cache: dict, report: dict, save_path: Path) -> None:
     blobs = _normalize_save_blob(raw, fallback)
     by_name = {r["repo"]: r for r in report.get("repos") or []}
     cache_repos = cache.setdefault("repos", {})
+    owner = report.get("owner") or ""
     for blob in blobs:
         name = blob.get("repo")
         if not name or name not in by_name:
             continue
-        entry = cache_repos.setdefault(name, {})
-        entry["owner"] = report.get("owner")
+        entry = cache_repos.setdefault(cache_key(owner, name), {})
+        entry["owner"] = owner
         entry["skill_version"] = SKILL_VERSION
         entry["fingerprint"] = by_name[name]["fingerprint"]
         entry["audit"] = {k: v for k, v in blob.items() if k != "repo"}
@@ -474,9 +513,24 @@ def main(argv: list[str] | None = None) -> int:
     ia = load_instruction_audit_cfg(cfg)
     long_form = set(ia["long_form_repos"])
 
-    listed = scan.list_repos(owner)
-    owned = {r["name"] for r in listed}
-    meta_by = {r["name"]: r for r in listed}
+    owned: set[str] = set()
+    meta_by: dict[str, dict] = {}
+    outside: list[str] = []
+    for name in names:
+        ok, meta = repo_is_under_owner(owner, name)
+        if ok and meta is not None:
+            owned.add(name)
+            meta_by[name] = meta
+        else:
+            outside.append(name)
+    if outside:
+        print(
+            json.dumps(
+                {"error": "repos outside owner", "owner": owner, "outside": outside},
+                indent=2,
+            )
+        )
+        return 2
 
     cache_path = args.cache
     cache = load_cache(cache_path)

@@ -184,27 +184,45 @@ def test_audit_named_repos_empty_surface_no_missing_id(tmp_path: Path):
 
 def test_cache_hit_requires_matching_fingerprint_and_audit():
     fp = "abc"
-    assert aa.cache_hit(None, fp) is None
-    assert aa.cache_hit({"skill_version": aa.SKILL_VERSION, "fingerprint": fp}, fp) is None
+    assert aa.cache_hit(None, fp, owner="me") is None
+    assert (
+        aa.cache_hit({"skill_version": aa.SKILL_VERSION, "fingerprint": fp}, fp, owner="me") is None
+    )
     assert (
         aa.cache_hit(
             {
+                "owner": "me",
                 "skill_version": "0",
                 "fingerprint": fp,
                 "audit": {"score": 1},
             },
             fp,
+            owner="me",
         )
         is None
     )
     assert aa.cache_hit(
         {
+            "owner": "me",
             "skill_version": aa.SKILL_VERSION,
             "fingerprint": fp,
             "audit": {"score": 12},
         },
         fp,
+        owner="me",
     ) == {"score": 12}
+
+
+def test_cache_hit_rejects_other_owner():
+    fp = "abc"
+    entry = {
+        "owner": "alice",
+        "skill_version": aa.SKILL_VERSION,
+        "fingerprint": fp,
+        "audit": {"score": 9},
+    }
+    assert aa.cache_hit(entry, fp, owner="bob") is None
+    assert aa.cache_hit(entry, fp, owner="alice") == {"score": 9}
 
 
 def test_apply_save_merges_audit(tmp_path: Path):
@@ -216,5 +234,32 @@ def test_apply_save_merges_audit(tmp_path: Path):
     save = tmp_path / "audit.json"
     save.write_text(json.dumps({"score": 14, "keep": ["x"], "remove": []}))
     aa.apply_save(cache, report, save)
-    assert cache["repos"]["fwlive"]["audit"]["score"] == 14
-    assert cache["repos"]["fwlive"]["fingerprint"] == "fp1"
+    key = aa.cache_key("me", "fwlive")
+    assert cache["repos"][key]["audit"]["score"] == 14
+    assert cache["repos"][key]["fingerprint"] == "fp1"
+    assert cache["repos"][key]["owner"] == "me"
+
+
+def test_owner_login_matches():
+    assert aa.owner_login_matches("me", {"owner": {"login": "me"}})
+    assert aa.owner_login_matches("Me", {"owner": {"login": "me"}})
+    assert not aa.owner_login_matches("me", {"owner": {"login": "other"}})
+    assert not aa.owner_login_matches("me", {})
+
+
+def test_inventory_error_does_not_look_empty(tmp_path: Path, monkeypatch):
+    def boom(*_a, **_k):
+        raise aa.InventoryError("failed to fetch git tree")
+
+    monkeypatch.setattr(aa, "inventory_repo", boom)
+    code, report = aa.audit_named_repos(
+        owner="me",
+        gitroot=tmp_path,
+        names=["fwlive"],
+        owned={"fwlive"},
+        long_form_repos=set(),
+        cache={"repos": {}},
+    )
+    assert code == 2
+    assert report["error"] == "inventory failed"
+    assert "repos" not in report or "fwlive" not in str(report.get("repos"))
