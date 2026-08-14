@@ -101,16 +101,29 @@ python3 scripts/scan.py --skip-readme-polish
 python3 scripts/scan.py --repos irr,fwlive
 ```
 
+Instruction-surface audit (AGENTS.md, Cursor rules, skills) is **not** part of
+the default scan. Forkers must not inherit fleet-wide AGENTS.md findings.
+Only when the operator names repos:
+
+```bash
+python3 scripts/audit_agents.py --repos fwlive
+```
+
+See `.cursor/skills/agents-md/`. Suggest-only; never auto-write AGENTS.md.
+Absence of AGENTS.md is valid. `--repos` is required.
+
 ## Layout
 
 | Path | Role |
 |------|------|
-| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `branch_protection`, `readme_polish`, Node 20 mins, `[codeql] required_query_suite` |
+| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `branch_protection`, `readme_polish`, Node 20 mins, `[codeql]`, `[instruction_audit]` (opt-in; not read by `scan.py`) |
 | `scripts/scan.py` | owner-wide scan |
+| `scripts/audit_agents.py` | opt-in instruction-surface inventory (`--repos` required) |
 | `scripts/triage_queue.py` | queue printer |
 | `scripts/hygiene_verdicts.py` | park / tier2 / suggest_only / active_fork / ship_only |
 | `templates/` | security-only Dependabot, dependency-review |
-| `.cursor/skills/housekeeping/` | Cursor skill |
+| `.cursor/skills/housekeeping/` | Cursor skill (default scan / triage) |
+| `.cursor/skills/agents-md/` | Opt-in AGENTS.md / rules / skills audit |
 | `.cursor/rules/owner-scope.mdc` | Always-on owner-scope agent rule |
 
 ## CLAUDE.md vs AGENTS.md

@@ -2057,7 +2057,13 @@ def print_summary(report: dict) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Instruction-surface audit is opt-in and not part of this scan: "
+            "python3 scripts/audit_agents.py --repos <name>"
+        ),
+    )
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--owner", help="GitHub owner/org (overrides config)")
     ap.add_argument("--gitroot", help="Local checkouts root (overrides config)")

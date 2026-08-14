@@ -51,6 +51,13 @@ python3 scripts/scan.py --skip-readme-polish  # skip suggest-only README/About p
 python3 scripts/scan.py --skip-local
 ```
 
+Instruction-surface audit is **not** part of the default scan. Do not run it
+unless the user names repo(s). Skill: `.cursor/skills/agents-md/`.
+
+```bash
+python3 scripts/audit_agents.py --repos fwlive
+```
+
 Requires authenticated `gh` with access to the owner’s repos (including private).
 
 ## Classification (size tags)
@@ -123,6 +130,7 @@ Details: [reference.md](reference.md).
 ## Files
 
 - `scripts/scan.py` — owner-wide scan (alerts + hygiene + PRs/issues + local)
+- `scripts/audit_agents.py` — opt-in instruction-surface inventory (`--repos` required)
 - `scripts/triage_queue.py` — queue printer
 - `templates/` — security-only Dependabot + dependency-review snippets
 - `config.toml` — owner, gitroot, pipeline allowlists

@@ -17,7 +17,9 @@ python3 scripts/scan.py --help
 ## Making changes
 
 1. Prefer extending `scripts/scan.py`, `scripts/triage_queue.py`, or
-   `scripts/hygiene_verdicts.py` over one-off `gh` loops.
+   `scripts/hygiene_verdicts.py` over one-off `gh` loops. Instruction-surface
+   audit is a separate opt-in script (`scripts/audit_agents.py`); do not fold
+   it into the default scan.
 2. Keep scans read-only. Write actions (merge, enable settings, open PRs) only
    when the operator explicitly asks.
 3. Update `.cursor/skills/housekeeping/` when agent behavior should change.

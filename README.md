@@ -65,6 +65,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `node20_action_min_majors` | Min majors for Node-24-capable first-party actions |
 | `[branch_protection] require_approving_reviews` | Suggest/require PR reviews (default `false` for solo owners) |
 | `[codeql] required_query_suite` | Default-setup suite floor: `extended` (default) / stronger passes; `default` triggers `codeql_default_query_suite`; set `"default"` to disable |
+| `[instruction_audit] long_form_repos` | Opt-in AGENTS.md audit only (`audit_agents.py --repos`). Not read by `scan.py`. |
 
 ## Project skill
 
@@ -72,6 +73,10 @@ When this repo is the Cursor workspace root, the agent skill at
 `.cursor/skills/housekeeping/` is available. It tells the agent to use these
 scripts, respect `pipeline_repos` / labels from config, and
 `move_agent_to_root` into a target checkout before editing.
+
+Instruction-surface audit (AGENTS.md / Cursor rules / skills) is **opt-in**
+and **not** part of `scan.py`. Use `.cursor/skills/agents-md/` only when the
+operator names repos: `python3 scripts/audit_agents.py --repos <name>`.
 
 Agent entrypoints: [`AGENTS.md`](AGENTS.md) (canonical), [`CLAUDE.md`](CLAUDE.md)
 (Claude Code pointer).
@@ -82,10 +87,12 @@ Agent entrypoints: [`AGENTS.md`](AGENTS.md) (canonical), [`CLAUDE.md`](CLAUDE.md
 config.example.toml         # starter config for any owner
 config.toml                 # your local/owner settings (may be personal)
 scripts/scan.py             # full read-only scan (alerts + hygiene)
+scripts/audit_agents.py     # opt-in instruction audit (--repos required)
 scripts/triage_queue.py     # verdict-sorted queue from latest report
 scripts/hygiene_verdicts.py # park / active_fork / tier2 / ship_only
 templates/                  # Dependabot / dependency-review snippets
 .cursor/skills/housekeeping/
+.cursor/skills/agents-md/   # opt-in AGENTS.md / rules / skills audit
 out/                        # generated reports (gitignored)
 ```
 
