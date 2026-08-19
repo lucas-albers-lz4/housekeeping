@@ -31,7 +31,7 @@ tool.
 2. **Scan**: `python3 scripts/scan.py` → full report at `out/scan-latest.json`
    + stdout summary. Narrow with `--repos a,b`; skip passes with
    `--skip-alerts` / `--skip-hygiene` / `--skip-workflow-pins` /
-   `--skip-branch-cleanup` / `--skip-readme-polish`.
+   `--skip-branch-cleanup` / `--skip-readme-polish` / `--skip-workflow-linters`.
 3. **Triage**: `python3 scripts/triage_queue.py` → verdict-sorted queues
    (fix-direct / suggest-only / park).
 4. **Fix**: settings first (table below), then PR-able items, then file
@@ -45,7 +45,7 @@ tool.
 | **Settings toggle (REST)** | `vuln_alerts_off`, `dependabot_security_updates_off`, `delete_branch_on_merge_off`, `code_scanning_not_configured`, `codeql_default_query_suite`, `workflow_permissions_write`, `branch_unprotected` | `gh api` PUT/PATCH per `.cursor/skills/housekeeping/reference.md` recipes; **re-query each setting after applying** (a PUT returning 0 is not proof). Code-scanning default-setup PATCH is **async** — returns `202` + `run_id` (applied by an Actions run); poll the GET 1–3 min before trusting it. |
 | **Settings toggle (UI-only — no REST endpoint)** | `secret_scanning_off`, `push_protection_off`, `secret_validity_checks_off`, `secret_nonprovider_patterns_off` | **Manual per repo**: Settings → Code security → Secret scanning / Push protection. There is **no API path** to enable these (verified: not in the current OpenAPI spec; the old `security-and-analysis` endpoint is gone; org/enterprise code-security configurations don't exist for User accounts). Do not attempt API writes — they 404. Flag the exact repos to the user as a manual step. |
 | **PR-able (fix-direct)** | `missing_dependabot_yml`, `node20_action_runtime`, `codeql_workflow_disabled`, `codeql_workflow_inert`, `codeql_workflow_no_security_events`, `codeql_workflow_paths_ignored`, `codeql_action_major_old`, `missing_security_policy` | Add the `templates/` file or edit the workflow, open a PR, leave it for user review. |
-| **Suggest (file as issues)** | `codeql_language_gap`, `codeql_workflow_default_queries`, `stale_merged_branches`, `readme_badges_thin`, `about_metadata_thin` | File a GitHub issue with acceptance criteria + “found by housekeeping scan”; never auto-apply. |
+| **Suggest (file as issues)** | `codeql_language_gap`, `codeql_workflow_default_queries`, `codeql_analysis_error`, `codeql_analysis_warning`, `stale_merged_branches`, `readme_badges_thin`, `about_metadata_thin`, `workflow_lint_actionlint`, `workflow_lint_zizmor` | File a GitHub issue with acceptance criteria + “found by housekeeping scan”; never auto-apply. |
 | **Park** | archived repos, non-`active_forks` forks | Skip; list for visibility only. |
 
 ## Must follow
@@ -69,8 +69,9 @@ tool.
    without an explicit user request. Never merge PRs with labels in
    `never_merge_labels` (e.g. `miner-eval`). Never delete remote branches
    from `stale_merged_branches` / suggest-only findings without an explicit ask.
-   `readme_badges_thin` / `about_metadata_thin` are also suggest-only (no auto
-   README/About edits). Never commit secrets or paste secret-scanning
+   `readme_badges_thin` / `about_metadata_thin` / `workflow_lint_actionlint` /
+   `workflow_lint_zizmor` are also suggest-only (no auto README/About edits or
+   workflow-linter fixes). Never commit secrets or paste secret-scanning
    payloads into chat/canvas.
 10. **Settings changes need explicit approval + verification.** Enabling repo
     settings (branch protection, Dependabot, code scanning) is a write action —
@@ -98,6 +99,7 @@ python3 scripts/scan.py --skip-hygiene
 python3 scripts/scan.py --skip-workflow-pins
 python3 scripts/scan.py --skip-branch-cleanup
 python3 scripts/scan.py --skip-readme-polish
+python3 scripts/scan.py --skip-workflow-linters
 python3 scripts/scan.py --repos irr,fwlive
 ```
 
@@ -116,7 +118,7 @@ Absence of AGENTS.md is valid. `--repos` is required.
 
 | Path | Role |
 |------|------|
-| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `branch_protection`, `readme_polish`, Node 20 mins, `[codeql]`, `[instruction_audit]` (opt-in; not read by `scan.py`) |
+| `config.toml` / `config.example.toml` | owner, gitroot, pipeline labels, `active_forks`, `branch_cleanup`, `branch_protection`, `readme_polish`, Node 20 mins, `[codeql]`, `[workflow_linters]`, `[instruction_audit]` (opt-in; not read by `scan.py`) |
 | `scripts/scan.py` | owner-wide scan |
 | `scripts/audit_agents.py` | opt-in instruction-surface inventory (`--repos` required) |
 | `scripts/triage_queue.py` | queue printer |

@@ -109,6 +109,18 @@ require_approving_reviews = false
 [codeql]
 required_query_suite = "extended"
 
+# Suggest-only actionlint + zizmor on the default-branch tree (REST materialize).
+# Findings are never auto-applied. If a binary is not on PATH (and its path is
+# empty), that linter is skipped — not treated as clean. Status is recorded on
+# the hygiene row. Personas: regular | pedantic | auditor. Skip with:
+#   python3 scripts/scan.py --skip-workflow-linters
+[workflow_linters]
+enabled = true
+actionlint_path = ""
+zizmor_path = ""
+zizmor_min_severity = "high"
+zizmor_persona = "regular"
+
 # Opt-in only — scan.py never reads this. Long-form root AGENTS.md is OK
 # (operator toolkit / the file is the product).
 [instruction_audit]

@@ -88,6 +88,20 @@ require_approving_reviews = false
 [codeql]
 required_query_suite = "extended"
 
+# Suggest-only actionlint + zizmor on the default-branch tree (REST materialize).
+# Binaries are resolved from PATH when paths are empty. If a binary is not on
+# PATH, that linter is skipped (not a clean bill). zizmor always runs --offline.
+# Findings are suggest-only — never auto-fix, never a gate.
+# zizmor_min_severity controls counted findings, not whether the tool runs.
+# Personas: regular | pedantic | auditor (there is no "extra"). Skip with:
+#   python3 scripts/scan.py --skip-workflow-linters
+[workflow_linters]
+enabled = true
+actionlint_path = ""
+zizmor_path = ""
+zizmor_min_severity = "high"
+zizmor_persona = "regular"
+
 # Opt-in instruction-surface audit (AGENTS.md / rules / skills).
 # NEVER read by scan.py. Forkers: leave empty. Only
 #   python3 scripts/audit_agents.py --repos <name>

@@ -13,6 +13,10 @@ to pipelines.
 - [`gh`](https://cli.github.com/) authenticated (`gh auth status`)
 - Python 3.11+ (uses `tomllib`)
 - Local checkouts optional; default root `~/gitroot`
+- Optional: [`actionlint`](https://github.com/rhysd/actionlint) and
+  [`zizmor`](https://github.com/zizmorcore/zizmor) on `PATH` for
+  suggest-only workflow-linter findings. If a binary is not on PATH, that
+  linter is skipped (not a clean bill).
 
 ## Quick start (your account)
 
@@ -66,6 +70,7 @@ Edit [`config.toml`](config.toml) (see example):
 | `[branch_protection] require_approving_reviews` | Suggest/require PR reviews (default `false` for solo owners) |
 | `[codeql] required_query_suite` | Default-setup suite floor: `extended` (default) / stronger passes; `default` triggers `codeql_default_query_suite`; set `"default"` to disable |
 | `[instruction_audit] long_form_repos` | Opt-in AGENTS.md audit only (`audit_agents.py --repos`). Not read by `scan.py`. |
+| `[workflow_linters]` | Suggest-only actionlint + zizmor (`enabled`, paths, `zizmor_min_severity`, persona `regular`/`pedantic`/`auditor`). Each tool is skipped if it is not on PATH |
 
 ## Project skill
 

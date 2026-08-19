@@ -55,7 +55,8 @@ VERDICT_META = {
         "label": "Suggest only — human confirm",
         "reason": (
             "Polish or destructive/ambiguous cleanup (README badges, About "
-            "metadata, stale merged branches). List for human; never auto-apply."
+            "metadata, stale merged branches, workflow linters). List for "
+            "human; never auto-apply."
         ),
     },
     "ship_only": {
@@ -72,6 +73,8 @@ SUGGEST_ONLY_FINDING_IDS = {
     "stale_merged_branches",
     "readme_badges_thin",
     "about_metadata_thin",
+    "workflow_lint_actionlint",
+    "workflow_lint_zizmor",
 }
 
 
