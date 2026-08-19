@@ -21,7 +21,7 @@ import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config.toml"
@@ -573,22 +573,27 @@ def _gh_api_list_page(path: str) -> tuple[list | None, str | None]:
         return None, "invalid_json"
 
 
-def _fetch_codeql_analyses(owner: str, repo: str) -> list | None:
-    """List CodeQL analyses, newest-first, capped at CODEQL_ANALYSES_MAX.
+def _fetch_codeql_analyses(owner: str, repo: str, default_branch: str) -> list | None:
+    """List default-branch CodeQL analyses, newest-first, capped at CODEQL_ANALYSES_MAX.
 
-    Returns None when the analyses API is 404/disabled (skip the finding).
-    Pages without `--paginate` so owner-wide scans do not walk unbounded history.
+    Returns None when the analyses API is unavailable or any page-1 error
+    (skip the finding — do not treat as an empty/clean list). Pages without
+    `--paginate` so owner-wide scans do not walk unbounded history. The REST
+    `ref=` filter is required so the 500-cap is default-branch rows (stale
+    language categories age out last, not PR analyses).
     """
     out: list = []
+    ref_q = quote(f"refs/heads/{default_branch}", safe="")
     max_pages = max(1, CODEQL_ANALYSES_MAX // CODEQL_ANALYSES_PAGE)
     for page in range(1, max_pages + 1):
         path = (
             f"repos/{owner}/{repo}/code-scanning/analyses"
-            f"?tool_name=CodeQL&per_page={CODEQL_ANALYSES_PAGE}&page={page}"
+            f"?tool_name=CodeQL&ref={ref_q}"
+            f"&per_page={CODEQL_ANALYSES_PAGE}&page={page}"
         )
-        data, err = _gh_api_list_page(path)
+        data, _err = _gh_api_list_page(path)
         if data is None:
-            if not out and err == "disabled_or_unavailable":
+            if not out:
                 return None
             break
         if not data:
@@ -617,7 +622,8 @@ def _latest_failed_codeql_workflow_run(
     if not runs:
         return None
     latest = max(runs, key=lambda r: r.get("created_at") or "")
-    if latest.get("conclusion") not in ("failure", "timed_out", "cancelled"):
+    # cancelled is usually supersede / cancel-in-progress, not a config error.
+    if latest.get("conclusion") not in ("failure", "timed_out"):
         return None
     return latest
 
@@ -648,7 +654,7 @@ def _scan_codeql_analysis_health(
 
     Returns (flagged health rows, findings). Empty when analyses API is 404.
     """
-    rows = _fetch_codeql_analyses(owner, repo)
+    rows = _fetch_codeql_analyses(owner, repo, default_branch)
     if rows is None:
         return [], []
     latest = _latest_codeql_analyses_by_category(rows, default_branch)

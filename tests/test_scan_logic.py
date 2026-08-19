@@ -707,14 +707,23 @@ def test_fetch_codeql_analyses_caps_and_404(monkeypatch):
         return [{"id": i} for i in range(scan.CODEQL_ANALYSES_PAGE)], None
 
     monkeypatch.setattr(scan, "_gh_api_list_page", fake_full)
-    out = scan._fetch_codeql_analyses("o", "r")
+    out = scan._fetch_codeql_analyses("o", "r", "main")
     assert len(out) == scan.CODEQL_ANALYSES_MAX
     assert len(calls) == 5
+    assert "ref=refs%2Fheads%2Fmain" in calls[0]
+    assert "tool_name=CodeQL" in calls[0]
 
     monkeypatch.setattr(
         scan, "_gh_api_list_page", lambda _p: (None, "disabled_or_unavailable")
     )
-    assert scan._fetch_codeql_analyses("o", "r") is None
+    assert scan._fetch_codeql_analyses("o", "r", "main") is None
+
+
+def test_fetch_codeql_analyses_other_error_is_skip(monkeypatch):
+    monkeypatch.setattr(
+        scan, "_gh_api_list_page", lambda _p: (None, "API rate limit exceeded")
+    )
+    assert scan._fetch_codeql_analyses("o", "r", "main") is None
 
 
 def test_codeql_analysis_error_rke2setup_shaped(monkeypatch):
@@ -830,6 +839,28 @@ def test_codeql_failed_workflow_not_double_emitted_with_analysis_error(monkeypat
     _health, findings = scan._scan_codeql_analysis_health("o", "r", "main")
     assert [f["id"] for f in findings] == ["codeql_analysis_error"]
     assert "/language:ruby" in findings[0]["message"]
+
+
+def test_latest_failed_codeql_run_ignores_cancelled(monkeypatch):
+    monkeypatch.setattr(
+        scan,
+        "gh_api_object",
+        lambda *_a, **_k: (
+            {
+                "workflow_runs": [
+                    {
+                        "path": ".github/workflows/codeql.yml",
+                        "head_branch": "main",
+                        "status": "completed",
+                        "conclusion": "cancelled",
+                        "created_at": "2026-08-18T00:00:00Z",
+                    }
+                ]
+            },
+            None,
+        ),
+    )
+    assert scan._latest_failed_codeql_workflow_run("o", "r", "main") is None
 
 
 def test_workflow_branch_glob_semantics():
