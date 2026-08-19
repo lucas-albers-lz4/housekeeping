@@ -12,9 +12,12 @@ import base64
 import collections
 import contextlib
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +70,10 @@ DEFAULT_NODE20_ACTION_MIN_MAJORS: dict[str, int] = {
 # achievable floor is `extended`. Config override: [codeql] required_query_suite
 # (set to "default" to disable the check).
 DEFAULT_CODEQL_REQUIRED_QUERY_SUITE = "extended"
+
+# Cap CodeQL analyses listing so owner-wide scans stay bounded (5×100).
+CODEQL_ANALYSES_MAX = 500
+CODEQL_ANALYSES_PAGE = 100
 
 # Suite strength ranking. API values are `default`/`extended`; the
 # `security-*` spellings are accepted defensively (UI/config-file paths).
@@ -134,6 +141,48 @@ DEFAULT_README_POLISH: dict = {
 DEFAULT_BRANCH_PROTECTION: dict = {
     "require_approving_reviews": False,
 }
+
+# Suggest-only actionlint + zizmor (REST-materialized default-branch tree).
+DEFAULT_WORKFLOW_LINTERS: dict = {
+    "enabled": True,
+    "actionlint_path": "",
+    "zizmor_path": "",
+    "zizmor_min_severity": "high",
+    "zizmor_persona": "regular",
+}
+ZIZMOR_PERSONAS = frozenset({"regular", "pedantic", "auditor"})
+ZIZMOR_SEVERITIES = ("informational", "low", "medium", "high")
+ZIZMOR_SEV_RANK = {name: i for i, name in enumerate(ZIZMOR_SEVERITIES)}
+WORKFLOW_LINTER_FINDING_IDS = frozenset(
+    {
+        "workflow_lint_actionlint",
+        "workflow_lint_zizmor",
+    }
+)
+WORKFLOW_LINTER_SIDECARS = frozenset(
+    {
+        "zizmor.yml",
+        "zizmor.yaml",
+        ".github/zizmor.yml",
+        ".github/zizmor.yaml",
+        ".github/actionlint.yml",
+        ".github/actionlint.yaml",
+    }
+)
+PRECOMMIT_BASENAMES = frozenset(
+    {
+        ".pre-commit-config.yaml",
+        ".pre-commit-config.yml",
+        ".pre-commit-hooks.yaml",
+        ".pre-commit-hooks.yml",
+    }
+)
+ACTION_YML_NAMES = frozenset({"action.yml", "action.yaml"})
+DEPENDABOT_LINTER_PATHS = frozenset(
+    {".github/dependabot.yml", ".github/dependabot.yaml"}
+)
+LINTER_TIMEOUT_SEC = 45
+_WORKFLOW_LINTER_MISSING_LOGGED: set[str] = set()
 
 # Markdown / HTML badge image markup in READMEs.
 _MD_BADGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -283,8 +332,11 @@ def _repo_tree_paths(owner: str, repo: str, branch: str) -> list[str] | None:
     if data is None:
         return None
     if data.get("truncated"):
-        # Truncated trees still usable for shallow path checks; continue.
-        pass
+        print(
+            f"warning: git tree truncated for {owner}/{repo} — "
+            "workflow-linter collectable set may be incomplete",
+            file=sys.stderr,
+        )
     return [t.get("path") for t in (data.get("tree") or []) if t.get("path")]
 
 
@@ -469,6 +521,196 @@ def _load_codeql_suite(cfg: dict | None) -> str:
     return DEFAULT_CODEQL_REQUIRED_QUERY_SUITE
 
 
+def _codeql_analysis_category(row: dict) -> str:
+    return (row.get("category") or row.get("analysis_key") or "unknown") or "unknown"
+
+
+def _latest_codeql_analyses_by_category(
+    rows: list, default_branch: str
+) -> dict[str, dict]:
+    """Keep default-branch analyses; latest created_at wins per category.
+
+    Categories no longer in default-setup languages are kept on purpose — GitHub
+    tool-status still treats the latest row for a stale language as health.
+    """
+    ref = f"refs/heads/{default_branch}"
+    latest: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("ref") != ref:
+            continue
+        cat = _codeql_analysis_category(row)
+        prev = latest.get(cat)
+        if prev is None or (row.get("created_at") or "") > (prev.get("created_at") or ""):
+            latest[cat] = row
+    return latest
+
+
+def _truncate_analysis_msg(text: str, limit: int = 160) -> str:
+    one = " ".join(text.split())
+    if len(one) <= limit:
+        return one
+    return one[: limit - 1] + "…"
+
+
+def _gh_api_list_page(path: str) -> tuple[list | None, str | None]:
+    """GET a JSON list without `--paginate` (one page)."""
+    p = run_gh(["api", path])
+    if p.returncode != 0:
+        err = (p.stderr or p.stdout or "").strip()
+        if "404" in err or "disabled" in err.lower():
+            return None, "disabled_or_unavailable"
+        return None, err.split("\n")[0][:200]
+    if not p.stdout.strip():
+        return [], None
+    try:
+        data = json.loads(p.stdout)
+        if isinstance(data, list):
+            return data, None
+        return None, "not_list"
+    except json.JSONDecodeError:
+        return None, "invalid_json"
+
+
+def _fetch_codeql_analyses(owner: str, repo: str) -> list | None:
+    """List CodeQL analyses, newest-first, capped at CODEQL_ANALYSES_MAX.
+
+    Returns None when the analyses API is 404/disabled (skip the finding).
+    Pages without `--paginate` so owner-wide scans do not walk unbounded history.
+    """
+    out: list = []
+    max_pages = max(1, CODEQL_ANALYSES_MAX // CODEQL_ANALYSES_PAGE)
+    for page in range(1, max_pages + 1):
+        path = (
+            f"repos/{owner}/{repo}/code-scanning/analyses"
+            f"?tool_name=CodeQL&per_page={CODEQL_ANALYSES_PAGE}&page={page}"
+        )
+        data, err = _gh_api_list_page(path)
+        if data is None:
+            if not out and err == "disabled_or_unavailable":
+                return None
+            break
+        if not data:
+            break
+        out.extend(data)
+        if len(data) < CODEQL_ANALYSES_PAGE or len(out) >= CODEQL_ANALYSES_MAX:
+            break
+    return out[:CODEQL_ANALYSES_MAX]
+
+
+def _latest_failed_codeql_workflow_run(
+    owner: str, repo: str, default_branch: str
+) -> dict | None:
+    """Latest completed CodeQL Actions run on the default branch if it failed."""
+    data, _err = gh_api_object(f"repos/{owner}/{repo}/actions/runs?per_page=30")
+    if not isinstance(data, dict):
+        return None
+    runs = [
+        r
+        for r in (data.get("workflow_runs") or [])
+        if isinstance(r, dict)
+        and "codeql" in (r.get("path") or r.get("name") or "").lower()
+        and r.get("head_branch") == default_branch
+        and r.get("status") == "completed"
+    ]
+    if not runs:
+        return None
+    latest = max(runs, key=lambda r: r.get("created_at") or "")
+    if latest.get("conclusion") not in ("failure", "timed_out", "cancelled"):
+        return None
+    return latest
+
+
+def _failed_run_has_newer_ok_analysis(run: dict, latest_by_cat: dict[str, dict]) -> bool:
+    run_at = run.get("created_at") or ""
+    for row in latest_by_cat.values():
+        if (row.get("error") or "").strip():
+            continue
+        if (row.get("created_at") or "") >= run_at:
+            return True
+    return False
+
+
+def _codeql_analysis_health_row(row: dict) -> dict:
+    return {
+        "category": _codeql_analysis_category(row),
+        "created_at": row.get("created_at") or "",
+        "error": (row.get("error") or "").strip(),
+        "warning": (row.get("warning") or "").strip(),
+    }
+
+
+def _scan_codeql_analysis_health(
+    owner: str, repo: str, default_branch: str
+) -> tuple[list[dict], list[dict]]:
+    """Flag latest-per-category CodeQL analysis error/warning (tool-status class).
+
+    Returns (flagged health rows, findings). Empty when analyses API is 404.
+    """
+    rows = _fetch_codeql_analyses(owner, repo)
+    if rows is None:
+        return [], []
+    latest = _latest_codeql_analyses_by_category(rows, default_branch)
+    status_url = f"https://github.com/{owner}/{repo}/security/code-scanning"
+    health: list[dict] = []
+    findings: list[dict] = []
+    emitted_error = False
+    for cat, row in sorted(latest.items()):
+        err = (row.get("error") or "").strip()
+        warn = (row.get("warning") or "").strip()
+        created = (row.get("created_at") or "")[:10]
+        if err:
+            health.append(_codeql_analysis_health_row(row))
+            findings.append(
+                _finding(
+                    "codeql_analysis_error",
+                    "medium",
+                    "suggest",
+                    f"CodeQL analysis error on {cat} ({created}): "
+                    f"{_truncate_analysis_msg(err)} — see Security → Code scanning "
+                    f"tool status ({status_url})",
+                )
+            )
+            emitted_error = True
+        elif warn:
+            health.append(_codeql_analysis_health_row(row))
+            findings.append(
+                _finding(
+                    "codeql_analysis_warning",
+                    "low",
+                    "suggest",
+                    f"CodeQL analysis warning on {cat} ({created}): "
+                    f"{_truncate_analysis_msg(warn)} — see Security → Code scanning "
+                    f"tool status ({status_url})",
+                )
+            )
+    if not emitted_error:
+        failed = _latest_failed_codeql_workflow_run(owner, repo, default_branch)
+        if failed is not None and not _failed_run_has_newer_ok_analysis(failed, latest):
+            concl = failed.get("conclusion") or "failure"
+            created = (failed.get("created_at") or "")[:10]
+            health.append(
+                {
+                    "category": "workflow",
+                    "created_at": failed.get("created_at") or "",
+                    "error": concl,
+                    "warning": "",
+                }
+            )
+            findings.append(
+                _finding(
+                    "codeql_analysis_error",
+                    "medium",
+                    "suggest",
+                    f"CodeQL workflow run {concl} on {default_branch} ({created}) "
+                    "with no newer successful analysis upload — see Security → "
+                    f"Code scanning tool status ({status_url})",
+                )
+            )
+    return health, findings
+
+
 def _load_node20_min_majors(cfg: dict | None) -> dict[str, int]:
     raw = (cfg or {}).get("node20_action_min_majors")
     if not isinstance(raw, dict) or not raw:
@@ -563,6 +805,438 @@ def _load_branch_protection_cfg(cfg: dict | None) -> dict:
     if "require_approving_reviews" in raw:
         out["require_approving_reviews"] = bool(raw["require_approving_reviews"])
     return out
+
+
+def _load_workflow_linters_cfg(cfg: dict | None) -> dict:
+    raw = (cfg or {}).get("workflow_linters")
+    out = dict(DEFAULT_WORKFLOW_LINTERS)
+    if not isinstance(raw, dict):
+        return out
+    if "enabled" in raw:
+        out["enabled"] = bool(raw["enabled"])
+    for key in ("actionlint_path", "zizmor_path"):
+        if isinstance(raw.get(key), str):
+            out[key] = raw[key]
+    if isinstance(raw.get("zizmor_min_severity"), str):
+        val = raw["zizmor_min_severity"].strip().lower()
+        if val in ZIZMOR_SEV_RANK:
+            out["zizmor_min_severity"] = val
+    if isinstance(raw.get("zizmor_persona"), str):
+        val = raw["zizmor_persona"].strip().lower()
+        if val in ZIZMOR_PERSONAS:
+            out["zizmor_persona"] = val
+    return out
+
+
+def _reset_workflow_linter_missing_log() -> None:
+    _WORKFLOW_LINTER_MISSING_LOGGED.clear()
+
+
+def _log_missing_linter(name: str) -> None:
+    if name in _WORKFLOW_LINTER_MISSING_LOGGED:
+        return
+    _WORKFLOW_LINTER_MISSING_LOGGED.add(name)
+    print(
+        f"{name} not on PATH — skipping workflow_lint_{name} "
+        "(not a clean bill; install the binary or pass --skip-workflow-linters)",
+        file=sys.stderr,
+    )
+
+
+def _safe_relpath(path: str) -> str | None:
+    """Normalized relative path, or None if absolute / traversal / empty."""
+    if not path or not isinstance(path, str):
+        return None
+    p = path.replace("\\", "/").strip()
+    if not p or p.startswith(("/", "~")):
+        return None
+    parts = [x for x in p.split("/") if x and x != "."]
+    if not parts or any(x == ".." for x in parts):
+        return None
+    return "/".join(parts)
+
+
+def _is_workflow_file(path: str) -> bool:
+    p = _safe_relpath(path)
+    if not p:
+        return False
+    name = Path(p).name
+    return p.startswith(".github/workflows/") and name.endswith((".yml", ".yaml"))
+
+
+def _is_workflow_linter_collectable(path: str) -> bool:
+    p = _safe_relpath(path)
+    if not p:
+        return False
+    name = Path(p).name
+    if _is_workflow_file(p):
+        return True
+    if name in ACTION_YML_NAMES:
+        return True
+    if p in DEPENDABOT_LINTER_PATHS:
+        return True
+    return name in PRECOMMIT_BASENAMES
+
+
+def _is_workflow_linter_sidecar(path: str) -> bool:
+    p = _safe_relpath(path)
+    return bool(p and p in WORKFLOW_LINTER_SIDECARS)
+
+
+def _workflow_linter_materialize_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Return (collectable, sidecars-to-fetch) relative paths, sorted unique."""
+    collectable: list[str] = []
+    sidecars: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        p = _safe_relpath(raw)
+        if not p or p in seen:
+            continue
+        if _is_workflow_linter_collectable(p):
+            seen.add(p)
+            collectable.append(p)
+        elif _is_workflow_linter_sidecar(p):
+            seen.add(p)
+            sidecars.append(p)
+    collectable.sort()
+    sidecars.sort()
+    return collectable, sidecars
+
+
+def _resolve_linter_binary(configured: str, name: str) -> str | None:
+    configured = (configured or "").strip()
+    if configured:
+        p = Path(configured).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+        return None
+    return shutil.which(name)
+
+
+def _fetch_file_text_allow_large(owner: str, repo: str, path: str) -> str | None:
+    """Contents API text, with git/blobs fallback when content is omitted (>1MB)."""
+    data, _err = gh_api_object(f"repos/{owner}/{repo}/contents/{path}")
+    if not data or data.get("type") != "file":
+        return None
+    content = data.get("content")
+    if content:
+        try:
+            return base64.b64decode(content).decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    sha = data.get("sha")
+    if not sha:
+        return None
+    blob, _ = gh_api_object(f"repos/{owner}/{repo}/git/blobs/{sha}")
+    if not blob:
+        return None
+    bcontent = blob.get("content")
+    if not bcontent:
+        return None
+    try:
+        return base64.b64decode(bcontent).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _write_linter_tree(
+    repo_dir: Path, owner: str, repo: str, relpaths: list[str]
+) -> list[str]:
+    written: list[str] = []
+    for rel in relpaths:
+        text = _fetch_file_text_allow_large(owner, repo, rel)
+        if text is None:
+            continue
+        dest = repo_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        written.append(rel)
+    return written
+
+
+def _parse_json_stream(text: str) -> list | None:
+    """Parse a JSON array, a single object, NDJSON, or concatenated objects."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    with contextlib.suppress(json.JSONDecodeError):
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return [data]
+    out: list = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    n = len(raw)
+    while idx < n:
+        while idx < n and raw[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(raw, idx)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(obj, dict):
+            out.append(obj)
+        elif isinstance(obj, list):
+            out.extend(obj)
+        else:
+            return None
+        idx = end
+    return out
+
+
+def _parse_actionlint_output(stdout: str) -> list[dict] | None:
+    parsed = _parse_json_stream(stdout)
+    if parsed is None:
+        return None
+    return [x for x in parsed if isinstance(x, dict)]
+
+
+def _parse_zizmor_output(stdout: str) -> list[dict] | None:
+    raw = (stdout or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return None
+
+
+def _actionlint_kind(err: dict) -> str:
+    kind = (err.get("kind") or "other").strip()
+    return kind or "other"
+
+
+def _actionlint_site(err: dict) -> str | None:
+    path = err.get("filepath") or err.get("file") or ""
+    line = err.get("line")
+    if path and line:
+        return f"{path}:{line}"
+    if path:
+        return str(path)
+    return None
+
+
+def _format_linter_sites(sites: list[str | None], limit: int = 5) -> str:
+    seen: list[str] = []
+    for s in sites:
+        if s and s not in seen:
+            seen.append(s)
+        if len(seen) >= limit:
+            break
+    return ", ".join(seen)
+
+
+def _summarize_actionlint(errors: list[dict], workflow_n: int) -> str:
+    kinds = collections.Counter(_actionlint_kind(e) for e in errors)
+    kind_s = ", ".join(f"{k}={n}" for k, n in sorted(kinds.items()))
+    sites = _format_linter_sites([_actionlint_site(e) for e in errors])
+    msg = f"actionlint: {len(errors)} findings in {workflow_n} workflows ({kind_s})"
+    if sites:
+        msg += f"; top: {sites}"
+    return msg + " — suggest-only, never auto-apply"
+
+
+def _zizmor_severity(item: dict) -> str:
+    det = item.get("determinations") or {}
+    return str(det.get("severity") or "").strip().lower()
+
+
+def _zizmor_meets_min(sev: str, min_sev: str) -> bool:
+    return ZIZMOR_SEV_RANK.get(sev, -1) >= ZIZMOR_SEV_RANK.get(min_sev, 3)
+
+
+def _zizmor_site(item: dict) -> str | None:
+    locs = item.get("locations") or []
+    if not locs or not isinstance(locs[0], dict):
+        return None
+    loc = locs[0]
+    path = None
+    with contextlib.suppress(KeyError, TypeError):
+        path = loc["symbolic"]["key"]["Local"]["verbatim_path"]
+    row = None
+    with contextlib.suppress(KeyError, TypeError):
+        row = loc["concrete"]["location"]["start_point"]["row"]
+    if path:
+        path = str(path)
+        if path.startswith("./"):
+            path = path[2:]
+    if path and isinstance(row, int):
+        return f"{path}:{row + 1}"
+    if path:
+        return path
+    return None
+
+
+def _summarize_zizmor(items: list[dict], min_severity: str) -> str:
+    idents = collections.Counter((i.get("ident") or "other") for i in items)
+    ident_s = ", ".join(f"{k}={n}" for k, n in idents.most_common())
+    sites = _format_linter_sites([_zizmor_site(i) for i in items])
+    msg = (
+        f"zizmor: {len(items)} findings (min_severity={min_severity}; {ident_s})"
+    )
+    if sites:
+        msg += f"; top: {sites}"
+    return msg + " — suggest-only, never auto-apply"
+
+
+def _run_actionlint(bin_path: str, repo_dir: Path) -> list[dict] | None:
+    try:
+        proc = subprocess.run(
+            [bin_path, "-format", "{{json .}}"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=LINTER_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    return _parse_actionlint_output(proc.stdout or "")
+
+
+def _run_zizmor(
+    bin_path: str,
+    repo_dir: Path,
+    *,
+    persona: str,
+    min_severity: str,
+) -> list[dict] | None:
+    try:
+        proc = subprocess.run(
+            [
+                bin_path,
+                "--offline",
+                "--no-progress",
+                "--format=json",
+                f"--persona={persona}",
+                f"--min-severity={min_severity}",
+                ".",
+            ],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=LINTER_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 3:
+        return []
+    if proc.returncode in (1, 2):
+        return None
+    if proc.returncode not in (0, 11, 12, 13, 14):
+        return None
+    return _parse_zizmor_output(proc.stdout or "")
+
+
+def _scan_workflow_linters(
+    owner: str,
+    repo: str,
+    paths: list[str],
+    linter_cfg: dict,
+    skip: bool,
+) -> tuple[list[dict], dict]:
+    status = {"actionlint": "skipped", "zizmor": "skipped"}
+    if skip or not linter_cfg.get("enabled", True):
+        return [], status
+    collectable, sidecars = _workflow_linter_materialize_paths(paths)
+    if not collectable:
+        return [], {"actionlint": "no_collectable_files", "zizmor": "no_collectable_files"}
+    al_bin = _resolve_linter_binary(str(linter_cfg.get("actionlint_path") or ""), "actionlint")
+    zz_bin = _resolve_linter_binary(str(linter_cfg.get("zizmor_path") or ""), "zizmor")
+    if al_bin is None:
+        _log_missing_linter("actionlint")
+        status["actionlint"] = "missing_binary"
+    if zz_bin is None:
+        _log_missing_linter("zizmor")
+        status["zizmor"] = "missing_binary"
+    if al_bin is None and zz_bin is None:
+        return [], status
+    findings: list[dict] = []
+    with tempfile.TemporaryDirectory(prefix="hk-linters-") as tmp:
+        repo_dir = Path(tmp)
+        written = _write_linter_tree(repo_dir, owner, repo, collectable + sidecars)
+        if not written:
+            return [], {"actionlint": "error", "zizmor": "error"}
+        git_ok = True
+        try:
+            gitp = subprocess.run(
+                ["git", "init", "-q"],
+                cwd=str(repo_dir),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            git_ok = gitp.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            git_ok = False
+        wanted_wf = [p for p in collectable if _is_workflow_file(p)]
+        written_set = set(written)
+        wf_incomplete = bool(wanted_wf) and any(p not in written_set for p in wanted_wf)
+        has_wf = any(_is_workflow_file(p) for p in written)
+        persona = str(linter_cfg.get("zizmor_persona") or "regular")
+        min_sev = str(linter_cfg.get("zizmor_min_severity") or "high")
+        if al_bin and wf_incomplete:
+            # Contents fetch dropped a listed workflow — not "no workflows".
+            status["actionlint"] = "error"
+        elif al_bin and has_wf and git_ok:
+            errors = _run_actionlint(al_bin, repo_dir)
+            if errors is None:
+                status["actionlint"] = "error"
+            else:
+                status["actionlint"] = "ran"
+                if errors:
+                    wf_n = sum(1 for p in written if _is_workflow_file(p))
+                    findings.append(
+                        _finding(
+                            "workflow_lint_actionlint",
+                            "low",
+                            "suggest",
+                            _summarize_actionlint(errors, wf_n),
+                        )
+                    )
+        elif al_bin and not wanted_wf:
+            status["actionlint"] = "no_workflows"
+        elif al_bin and not git_ok:
+            status["actionlint"] = "error"
+        if zz_bin:
+            items = _run_zizmor(
+                zz_bin, repo_dir, persona=persona, min_severity=min_sev
+            )
+            if items is None:
+                status["zizmor"] = "error"
+            else:
+                status["zizmor"] = "ran"
+                counted = [
+                    i for i in items if _zizmor_meets_min(_zizmor_severity(i), min_sev)
+                ]
+                if counted:
+                    hk_sev = (
+                        "medium"
+                        if any(_zizmor_severity(i) == "high" for i in counted)
+                        else "low"
+                    )
+                    findings.append(
+                        _finding(
+                            "workflow_lint_zizmor",
+                            hk_sev,
+                            "suggest",
+                            _summarize_zizmor(counted, min_sev),
+                        )
+                    )
+    return findings, status
 
 
 def _readme_path(paths: list[str]) -> str | None:
@@ -958,6 +1632,8 @@ def scan_repo_hygiene(
     skip_branch_cleanup: bool = False,
     readme_polish_cfg: dict | None = None,
     skip_readme_polish: bool = False,
+    workflow_linters_cfg: dict | None = None,
+    skip_workflow_linters: bool = False,
     branch_protection_cfg: dict | None = None,
     pipeline_repos: set[str] | None = None,
     parked_repos: set[str] | None = None,
@@ -972,6 +1648,7 @@ def scan_repo_hygiene(
     node20_min_majors = node20_min_majors or dict(DEFAULT_NODE20_ACTION_MIN_MAJORS)
     branch_cleanup_cfg = branch_cleanup_cfg or dict(DEFAULT_BRANCH_CLEANUP)
     readme_polish_cfg = readme_polish_cfg or dict(DEFAULT_README_POLISH)
+    workflow_linters_cfg = workflow_linters_cfg or dict(DEFAULT_WORKFLOW_LINTERS)
     branch_protection_cfg = branch_protection_cfg or dict(DEFAULT_BRANCH_PROTECTION)
     require_reviews = bool(branch_protection_cfg.get("require_approving_reviews"))
     pipeline_repos = pipeline_repos or set()
@@ -1237,6 +1914,7 @@ def scan_repo_hygiene(
     # --- Deep CodeQL configuration checks (default-setup quality + advanced
     # workflow correctness). Read-only; the fixes are settings PATCHes or PRs.
     codeql_config: dict = {"mode": "none", "state": code_scanning_report}
+    codeql_analysis_health: list[dict] = []
     if has_code and not code_scanning_unavailable_private:
         if cs_state == "configured":
             codeql_config["mode"] = "default-setup"
@@ -1363,6 +2041,13 @@ def scan_repo_hygiene(
                         "push/PR — those events never analyze anything",
                     )
                 )
+        # Configured-but-unhealthy: latest-per-category analysis error/warning
+        # (GitHub Security tool-status banner). Skip if not actually configured.
+        if cs_state == "configured" or has_codeql_workflow:
+            codeql_analysis_health, extra = _scan_codeql_analysis_health(
+                owner, repo, branch
+            )
+            findings.extend(extra)
 
     if has_code and not has_workflows and repo not in no_ci_repos:
         findings.append(
@@ -1602,9 +2287,19 @@ def scan_repo_hygiene(
                 )
             )
 
+    lint_findings, workflow_linters_status = _scan_workflow_linters(
+        owner,
+        repo,
+        paths,
+        workflow_linters_cfg,
+        skip_workflow_linters,
+    )
+    findings.extend(lint_findings)
+
     if is_fork and not is_active_fork:
         for f in findings:
-            f["size"] = "park"
+            if f.get("id") not in WORKFLOW_LINTER_FINDING_IDS:
+                f["size"] = "park"
         score = "park"
     elif not findings:
         score = "ok"
@@ -1627,6 +2322,7 @@ def scan_repo_hygiene(
         "push_protection": push_prot_report,
         "code_scanning_default_setup": code_scanning_report,
         "code_scanning_config": codeql_config,
+        "codeql_analysis_health": codeql_analysis_health,
         "branch_protection": None if rulesets is None else branch_protection is not None,
         "rulesets": bool(rulesets) if rulesets is not None else None,
         "workflow_permissions": wf_perms,
@@ -1641,6 +2337,7 @@ def scan_repo_hygiene(
         "readme_path": readme_path,
         "readme_missing_badges": readme_missing_badges,
         "about_gaps": about_gaps,
+        "workflow_linters": workflow_linters_status,
         "findings": findings,
         "url": f"https://github.com/{owner}/{repo}/settings/security_analysis",
     }
@@ -1942,6 +2639,24 @@ def suggest_size(item: dict, kind: str) -> str:
     return "review"
 
 
+def _workflow_linter_path_skip_note(hygiene: list[dict]) -> str | None:
+    """One-line summary when actionlint/zizmor were skipped because they are not on PATH."""
+    skipped: list[str] = []
+    for tool in ("actionlint", "zizmor"):
+        if any((h.get("workflow_linters") or {}).get(tool) == "missing_binary" for h in hygiene):
+            skipped.append(tool)
+    if not skipped:
+        return None
+    return "workflow linters: " + ", ".join(f"{t} skipped (not on PATH)" for t in skipped)
+
+
+def _announce_missing_workflow_linters(cfg: dict) -> None:
+    """Resolve binaries once at scan start so PATH skips are visible immediately."""
+    for name, key in (("actionlint", "actionlint_path"), ("zizmor", "zizmor_path")):
+        if _resolve_linter_binary(str(cfg.get(key) or ""), name) is None:
+            _log_missing_linter(name)
+
+
 def print_summary(report: dict) -> None:
     dep = report["dependabot"]
     code = report["code_scanning"]
@@ -1976,6 +2691,9 @@ def print_summary(report: dict) -> None:
         parked = sum(1 for h in hygiene if h.get("score") == "park")
         finding_n = sum(len(h.get("findings") or []) for h in hygiene)
         print(f"repo hygiene: {needs} needs-work · {ok} ok · {parked} park · {finding_n} findings")
+        note = _workflow_linter_path_skip_note(hygiene)
+        if note:
+            print(note)
     print()
 
     if hygiene:
@@ -2103,6 +2821,14 @@ def main() -> int:
         help="Skip suggest-only README badge / About metadata checks",
     )
     ap.add_argument(
+        "--skip-workflow-linters",
+        action="store_true",
+        help=(
+            "Skip suggest-only actionlint/zizmor checks "
+            "(also skipped automatically if a binary is not on PATH)"
+        ),
+    )
+    ap.add_argument(
         "--repos",
         help="Comma-separated repo names to scan (default: all owned)",
     )
@@ -2122,6 +2848,7 @@ def main() -> int:
     codeql_suite = _load_codeql_suite(cfg)
     branch_cleanup = _load_branch_cleanup_cfg(cfg)
     readme_polish = _load_readme_polish_cfg(cfg)
+    workflow_linters = _load_workflow_linters_cfg(cfg)
     branch_protection = _load_branch_protection_cfg(cfg)
     pipeline_repos = set(cfg.get("pipeline_repos") or [])
     parked_repos = set(cfg.get("parked_repos") or [])
@@ -2136,6 +2863,13 @@ def main() -> int:
         repos = [r for r in repos if r["name"] in want]
 
     print(f"Scanning {len(repos)} repos for {owner} …", file=sys.stderr)
+    _reset_workflow_linter_missing_log()
+    if (
+        not args.skip_hygiene
+        and not args.skip_workflow_linters
+        and workflow_linters.get("enabled", True)
+    ):
+        _announce_missing_workflow_linters(workflow_linters)
 
     dependabot = []
     code_scanning = []
@@ -2172,6 +2906,8 @@ def main() -> int:
                     skip_branch_cleanup=args.skip_branch_cleanup,
                     readme_polish_cfg=readme_polish,
                     skip_readme_polish=args.skip_readme_polish,
+                    workflow_linters_cfg=workflow_linters,
+                    skip_workflow_linters=args.skip_workflow_linters,
                     branch_protection_cfg=branch_protection,
                     pipeline_repos=pipeline_repos,
                     parked_repos=parked_repos,

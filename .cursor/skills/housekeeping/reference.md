@@ -73,8 +73,25 @@ filters that exclude the default branch — glob-aware, `**`/`*` cover
 suite only, `codeql_workflow_default_queries`, low/suggest),
 `github/codeql-action` pinned below v3 (`codeql_action_major_old`), and
 blanket `paths-ignore: ['**']` on push/PR only (`codeql_workflow_paths_ignored`).
-All medium findings are fix-direct; the low/suggest pair is filed as issues
+All medium workflow/settings findings are fix-direct; the low/suggest pair
+(`codeql_language_gap`, `codeql_workflow_default_queries`) is filed as issues
 per housekeeping convention.
+
+Configured-but-unhealthy CodeQL (`codeql_analysis_error` medium/suggest,
+`codeql_analysis_warning` low/suggest): GitHub’s Security page can banner
+“Code scanning configuration error” even when default-setup is `configured`
+and recent Actions runs succeeded. There is **no public REST/GraphQL** for the
+tool-status page. Detect via
+[`GET /repos/{owner}/{repo}/code-scanning/analyses`](https://docs.github.com/rest/code-scanning/code-scanning)
+(`tool_name=CodeQL`, default-branch refs only, cap 500). Group by `category`
+(fallback `analysis_key`); latest `created_at` wins — **include stale
+categories no longer in default-setup `languages`** (that is how a leftover
+`/language:ruby` error keeps the banner). Non-empty `error` →
+`codeql_analysis_error`; else non-empty `warning` → `codeql_analysis_warning`.
+Skip when code scanning is absent, `unavailable_private`, archived, or the
+analyses API 404s. Same verdict path as `codeql_language_gap` (not
+`SUGGEST_ONLY_FINDING_IDS`). Human confirms on Security → Code scanning tool
+status; do not auto-delete analyses or re-PATCH default-setup.
 
 Finding `stale_merged_branches` (low, **suggest-only**): remote heads of PRs
 merged more than `merged_retention_days` ago (default 30) that still exist.
@@ -93,6 +110,29 @@ settings. Package-registry badges are **not** required (manifests ≠ published
 packages). Skipped for `pipeline_repos`, `parked_repos`, non-`active_forks`,
 and repos without code. Config: `[readme_polish]`. Skip with
 `--skip-readme-polish`.
+
+Finding `workflow_lint_actionlint` / `workflow_lint_zizmor` (low, or medium
+when zizmor counted at least one High; **suggest-only**): optional local
+**actionlint** and **zizmor** runs against a REST-materialized default-branch
+tree (workflows, `action.yml`, Dependabot, pre-commit configs, plus linter
+sidecars). The scan never uses gitroot HEAD/working tree. If a binary is not
+on PATH, that linter is **skipped** (not a clean bill) — stderr says so at
+scan start, and the hygiene row records `workflow_linters` status (`skipped` /
+`no_collectable_files` / `missing_binary` / `ran` / `error`). zizmor always
+runs `--offline` (even if `GH_TOKEN` is set). Personas are `regular` |
+`pedantic` | `auditor` (there is no `extra`). Counted zizmor findings use
+`[workflow_linters] zizmor_min_severity` (default `high`). actionlint
+`-format '{{json .}}'` exit 1 is findings, not a crash; zizmor json-v1 `row`
+is 0-based (displayed as `row+1`). Contents files over 1MB use the git blobs
+API. Truncated recursive git trees may omit collectable files (stderr
+warning; no local fallback). If `shellcheck` is not on PATH, actionlint omits
+those kinds (sre-ai-llm-work's large shellcheck counts depend on it).
+Archived repos keep the existing early return (no lint findings). Pipeline
+repos and non-active forks still emit; `SUGGEST_ONLY_FINDING_IDS` keeps the
+verdict suggest-only (fork `size=park` rewrite exempts these two IDs). Parked
+repos emit then park. Config: `[workflow_linters]`. Skip with
+`--skip-workflow-linters`. Tested versions: actionlint v1.7.7, zizmor v1.29.0
+(2026-08-18). Out of scope: per-repo CI gates, SHA-pin bulk remediation.
 
 Private repos without GHAS: the scanner records `secret_scanning` /
 `push_protection` as `unavailable_private` and does **not** emit
@@ -153,6 +193,11 @@ Still use a branch + PR if the change is more than a few lines or CI is flaky.
 - `readme_badges_thin` / `about_metadata_thin`: note badge or About gaps; human
   decides whether to add shields/Actions badges or set description/topics.
   Do not auto-PR README/About changes from housekeeping.
+- `workflow_lint_actionlint` / `workflow_lint_zizmor`: file as issues with
+  counts and top file:line sites; never auto-apply workflow or pin changes.
+- `codeql_analysis_error` / `codeql_analysis_warning`: file as issues pointing
+  at Security → Code scanning tool status; never delete analyses or re-PATCH
+  default-setup without an explicit ask.
 
 ### park
 
